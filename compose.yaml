@@ -1,0 +1,17 @@
+services:
+  dev:
+    hostname: llm-distill
+    build:
+      context: docker/
+      dockerfile: dev.Dockerfile
+    working_dir: /app
+    volumes:
+      - ./.local/mnt/.cargo:/home/dev/.cargo
+      - ./.local/mnt/.config:/home/dev/.config
+      - ./:/app
+      - ./.local/mnt:/app/.local/mnt:ro
+      - ./docker:/app/docker:ro
+      - ./compose.yaml:/app/compose.yaml:ro
+      - ./.git:/app/.git:ro
+    init: true
+    command: ["tail", "-f", "/dev/null"]

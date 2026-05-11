@@ -1,0 +1,15 @@
+(version 1)
+(deny default)
+
+(allow process*)
+(allow sysctl-read)
+(allow mach-lookup)
+(allow signal (target self))
+
+(allow file-read* file-map-executable)
+
+(allow file-write*
+  (literal "/dev/null"))
+
+(allow file-write* file-ioctl file-map-executable
+  (subpath "__PROJECT_DIR__"))
