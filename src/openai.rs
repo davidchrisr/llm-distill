@@ -1,6 +1,7 @@
 use crate::prompt::Prompt;
 use crate::settings::RuntimeSettings;
 use anyhow::{Context, Result, anyhow};
+use reqwest::StatusCode;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -25,12 +26,58 @@ impl ResponsesClient {
         settings: &RuntimeSettings,
         prompt: &Prompt,
     ) -> Result<String> {
+        Ok(self
+            .create_response(settings, prompt, settings.max_output_tokens, None)
+            .await?
+            .text)
+    }
+
+    pub async fn create_response(
+        &self,
+        settings: &RuntimeSettings,
+        prompt: &Prompt,
+        max_output_tokens: u32,
+        previous_response_id: Option<&str>,
+    ) -> Result<ResponseOutput> {
+        let mut attempt = 0;
+        let mut backoff = Duration::from_millis(settings.retry_backoff_ms);
+
+        loop {
+            match self
+                .try_create_response(settings, prompt, max_output_tokens, previous_response_id)
+                .await
+            {
+                Ok(output) => return Ok(output),
+                Err(error) if error.is_retryable() && attempt < settings.retry_count => {
+                    attempt += 1;
+                    eprintln!(
+                        "distill: API request failed, retrying in {}ms (attempt {}/{})",
+                        backoff.as_millis(),
+                        attempt,
+                        settings.retry_count
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff = backoff.saturating_mul(2);
+                }
+                Err(error) => return error.into_result(),
+            }
+        }
+    }
+
+    async fn try_create_response(
+        &self,
+        settings: &RuntimeSettings,
+        prompt: &Prompt,
+        max_output_tokens: u32,
+        previous_response_id: Option<&str>,
+    ) -> ResponseAttempt {
         let url = responses_url(&settings.api_base)?;
         let request = ResponsesRequest {
             model: &settings.model,
             instructions: &prompt.instructions,
             input: &prompt.input,
-            max_output_tokens: settings.max_output_tokens,
+            max_output_tokens,
+            previous_response_id,
         };
 
         let response = self
@@ -40,17 +87,72 @@ impl ResponsesClient {
             .json(&request)
             .send()
             .await
-            .context("request to Responses API failed")?;
+            .map_err(ResponseError::Request)?;
 
         let status = response.status();
-        let payload = response.text().await.context("failed to read response")?;
+        let payload = response.text().await.map_err(ResponseError::Read)?;
 
         if !status.is_success() {
-            anyhow::bail!("Responses API returned {status}: {payload}");
+            return Err(ResponseError::Status { status, payload });
         }
 
-        extract_output_text(&payload)
+        extract_response_output(&payload).map_err(ResponseError::Payload)
     }
+}
+
+type ResponseAttempt = std::result::Result<ResponseOutput, ResponseError>;
+
+#[derive(Debug)]
+enum ResponseError {
+    Request(reqwest::Error),
+    Read(reqwest::Error),
+    Status { status: StatusCode, payload: String },
+    Payload(anyhow::Error),
+    Other(anyhow::Error),
+}
+
+impl ResponseError {
+    fn is_retryable(&self) -> bool {
+        match self {
+            Self::Request(error) | Self::Read(error) => {
+                error.is_timeout() || error.is_connect() || error.is_request()
+            }
+            Self::Status { status, .. } => matches!(
+                *status,
+                StatusCode::REQUEST_TIMEOUT
+                    | StatusCode::CONFLICT
+                    | StatusCode::TOO_MANY_REQUESTS
+                    | StatusCode::INTERNAL_SERVER_ERROR
+                    | StatusCode::BAD_GATEWAY
+                    | StatusCode::SERVICE_UNAVAILABLE
+                    | StatusCode::GATEWAY_TIMEOUT
+            ),
+            Self::Payload(_) | Self::Other(_) => false,
+        }
+    }
+
+    fn into_result<T>(self) -> Result<T> {
+        match self {
+            Self::Request(error) => Err(error).context("request to Responses API failed"),
+            Self::Read(error) => Err(error).context("failed to read response"),
+            Self::Status { status, payload } => {
+                anyhow::bail!("Responses API returned {status}: {payload}")
+            }
+            Self::Payload(error) | Self::Other(error) => Err(error),
+        }
+    }
+}
+
+impl From<anyhow::Error> for ResponseError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::Other(error)
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ResponseOutput {
+    pub id: Option<String>,
+    pub text: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,6 +161,26 @@ struct ResponsesRequest<'a> {
     instructions: &'a str,
     input: &'a str,
     max_output_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_response_id: Option<&'a str>,
+}
+
+#[cfg(test)]
+fn responses_request_json(
+    model: &str,
+    prompt: &Prompt,
+    max_output_tokens: u32,
+    previous_response_id: Option<&str>,
+) -> Result<Value> {
+    let request = ResponsesRequest {
+        model,
+        instructions: &prompt.instructions,
+        input: &prompt.input,
+        max_output_tokens,
+        previous_response_id,
+    };
+
+    serde_json::to_value(request).context("failed to serialize Responses request")
 }
 
 pub fn responses_url(api_base: &str) -> Result<Url> {
@@ -71,13 +193,20 @@ pub fn responses_url(api_base: &str) -> Result<Url> {
 }
 
 pub fn extract_output_text(raw: &str) -> Result<String> {
+    Ok(extract_response_output(raw)?.text)
+}
+
+pub fn extract_response_output(raw: &str) -> Result<ResponseOutput> {
     let payload: ResponsesPayload =
         serde_json::from_str(raw).context("Responses API returned invalid JSON")?;
 
     if let Some(output_text) = payload.output_text {
         let trimmed = output_text.trim();
         if !trimmed.is_empty() {
-            return Ok(trimmed.to_string());
+            return Ok(ResponseOutput {
+                id: payload.id,
+                text: trimmed.to_string(),
+            });
         }
     }
 
@@ -97,12 +226,16 @@ pub fn extract_output_text(raw: &str) -> Result<String> {
     if trimmed.is_empty() {
         Err(anyhow!("Responses API returned no output text"))
     } else {
-        Ok(trimmed.to_string())
+        Ok(ResponseOutput {
+            id: payload.id,
+            text: trimmed.to_string(),
+        })
     }
 }
 
 #[derive(Debug, Deserialize)]
 struct ResponsesPayload {
+    id: Option<String>,
     output_text: Option<String>,
 }
 
@@ -126,5 +259,40 @@ mod tests {
             extract_output_text(r#"{"output_text":"  compact answer  "}"#).unwrap(),
             "compact answer"
         );
+    }
+
+    #[test]
+    fn extracts_response_id_with_output_text() {
+        assert_eq!(
+            extract_response_output(r#"{"id":"resp_123","output_text":"  compact answer  "}"#)
+                .unwrap(),
+            ResponseOutput {
+                id: Some("resp_123".to_string()),
+                text: "compact answer".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn serializes_previous_response_id_when_present() {
+        let prompt = Prompt {
+            instructions: "instructions".to_string(),
+            input: "input".to_string(),
+        };
+        let value = responses_request_json("model", &prompt, 128, Some("resp_previous")).unwrap();
+
+        assert_eq!(value["previous_response_id"], "resp_previous");
+        assert_eq!(value["max_output_tokens"], 128);
+    }
+
+    #[test]
+    fn omits_previous_response_id_when_absent() {
+        let prompt = Prompt {
+            instructions: "instructions".to_string(),
+            input: "input".to_string(),
+        };
+        let value = responses_request_json("model", &prompt, 128, None).unwrap();
+
+        assert!(value.get("previous_response_id").is_none());
     }
 }

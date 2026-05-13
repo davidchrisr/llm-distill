@@ -47,7 +47,18 @@ pub fn get_value(config: &PersistedSettings, key: ConfigKey) -> Option<String> {
         ConfigKey::ApiKey => config.api_key.as_ref().map(|_| "***".to_string()),
         ConfigKey::TimeoutMs => config.timeout_ms.map(|value| value.to_string()),
         ConfigKey::MaxOutputTokens => config.max_output_tokens.map(|value| value.to_string()),
+        ConfigKey::ProgressMaxOutputTokens => config
+            .progress_max_output_tokens
+            .map(|value| value.to_string()),
         ConfigKey::MaxInputChars => config.max_input_chars.map(|value| value.to_string()),
+        ConfigKey::MaxCollectedBytes => config.max_collected_bytes.map(|value| value.to_string()),
+        ConfigKey::ProgressMode => config.progress_mode.map(|value| value.to_string()),
+        ConfigKey::ProgressIntervalMs => config.progress_interval_ms.map(|value| value.to_string()),
+        ConfigKey::InteractiveDetectMs => {
+            config.interactive_detect_ms.map(|value| value.to_string())
+        }
+        ConfigKey::RetryCount => config.retry_count.map(|value| value.to_string()),
+        ConfigKey::RetryBackoffMs => config.retry_backoff_ms.map(|value| value.to_string()),
     }
 }
 
@@ -60,8 +71,26 @@ pub fn set_value(config: &mut PersistedSettings, key: ConfigKey, value: &str) ->
         ConfigKey::MaxOutputTokens => {
             config.max_output_tokens = Some(parse_positive(value, "max-output-tokens")?)
         }
+        ConfigKey::ProgressMaxOutputTokens => {
+            config.progress_max_output_tokens =
+                Some(parse_positive(value, "progress-max-output-tokens")?)
+        }
         ConfigKey::MaxInputChars => {
             config.max_input_chars = Some(parse_positive(value, "max-input-chars")?)
+        }
+        ConfigKey::MaxCollectedBytes => {
+            config.max_collected_bytes = Some(parse_positive(value, "max-collected-bytes")?)
+        }
+        ConfigKey::ProgressMode => config.progress_mode = Some(value.parse()?),
+        ConfigKey::ProgressIntervalMs => {
+            config.progress_interval_ms = Some(parse_positive(value, "progress-interval-ms")?)
+        }
+        ConfigKey::InteractiveDetectMs => {
+            config.interactive_detect_ms = Some(parse_number(value, "interactive-detect-ms")?)
+        }
+        ConfigKey::RetryCount => config.retry_count = Some(parse_number(value, "retry-count")?),
+        ConfigKey::RetryBackoffMs => {
+            config.retry_backoff_ms = Some(parse_positive(value, "retry-backoff-ms")?)
         }
     }
     Ok(())
@@ -87,4 +116,60 @@ where
         anyhow::bail!("{name} must be a positive number");
     }
     Ok(parsed)
+}
+
+fn parse_number<T>(value: &str, name: &str) -> Result<T>
+where
+    T: std::str::FromStr,
+{
+    value
+        .trim()
+        .parse::<T>()
+        .map_err(|_| anyhow!("{name} must be a number"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::ProgressMode;
+
+    #[test]
+    fn sets_and_gets_recent_numeric_keys() {
+        let mut config = PersistedSettings::default();
+
+        set_value(&mut config, ConfigKey::InteractiveDetectMs, "0").unwrap();
+        set_value(&mut config, ConfigKey::RetryCount, "5").unwrap();
+        set_value(&mut config, ConfigKey::RetryBackoffMs, "1000").unwrap();
+        set_value(&mut config, ConfigKey::ProgressMaxOutputTokens, "128").unwrap();
+
+        assert_eq!(
+            get_value(&config, ConfigKey::InteractiveDetectMs).as_deref(),
+            Some("0")
+        );
+        assert_eq!(
+            get_value(&config, ConfigKey::RetryCount).as_deref(),
+            Some("5")
+        );
+        assert_eq!(
+            get_value(&config, ConfigKey::RetryBackoffMs).as_deref(),
+            Some("1000")
+        );
+        assert_eq!(
+            get_value(&config, ConfigKey::ProgressMaxOutputTokens).as_deref(),
+            Some("128")
+        );
+    }
+
+    #[test]
+    fn sets_progress_mode() {
+        let mut config = PersistedSettings::default();
+
+        set_value(&mut config, ConfigKey::ProgressMode, "summary").unwrap();
+
+        assert_eq!(config.progress_mode, Some(ProgressMode::Summary));
+        assert_eq!(
+            get_value(&config, ConfigKey::ProgressMode).as_deref(),
+            Some("summary")
+        );
+    }
 }

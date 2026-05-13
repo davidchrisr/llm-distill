@@ -15,6 +15,39 @@ pub fn build_batch_prompt(question: &str, command_output: &str, max_input_chars:
     }
 }
 
+pub fn build_progress_prompt(question: &str, new_output: &str, max_input_chars: usize) -> Prompt {
+    Prompt {
+        instructions: progress_instructions(),
+        input: format!(
+            "New command output since the previous progress summary:\n{}\n\nFinal question:\n{}",
+            fit_input(new_output, max_input_chars),
+            question.trim()
+        ),
+    }
+}
+
+pub fn build_final_prompt(
+    question: &str,
+    retained_output: &str,
+    max_input_chars: usize,
+    has_progress_context: bool,
+) -> Prompt {
+    let context_note = if has_progress_context {
+        "Earlier progress summaries are available in the Responses conversation chain. Use them together with the retained final command output below."
+    } else {
+        "No earlier progress summaries are available."
+    };
+
+    Prompt {
+        instructions: instructions(false),
+        input: format!(
+            "{context_note}\n\nRetained final command output:\n{}\n\nQuestion:\n{}",
+            fit_input(retained_output, max_input_chars),
+            question.trim()
+        ),
+    }
+}
+
 pub fn build_watch_prompt(
     question: &str,
     previous: &str,
@@ -77,6 +110,17 @@ pub fn fit_input(input: &str, max_chars: usize) -> String {
     format!("{head}{marker}{tail}")
 }
 
+fn progress_instructions() -> String {
+    [
+        "Summarize only the new command output for another agent.",
+        "Preserve facts needed to answer the final question later.",
+        "Do not produce the final answer unless the new output conclusively contains it.",
+        "Do not add preamble, markdown fences, or invented data.",
+        "Keep this interim summary concise.",
+    ]
+    .join(" ")
+}
+
 fn instructions(watch_mode: bool) -> String {
     let role = if watch_mode {
         "Compare two consecutive command-output snapshots and report only the relevant change."
@@ -118,5 +162,21 @@ mod tests {
     #[test]
     fn fit_input_keeps_source_text_for_tiny_limits() {
         assert_eq!(fit_input("abcdefghijkl", 10), "abcdefghij");
+    }
+
+    #[test]
+    fn progress_prompt_marks_output_as_incremental() {
+        let prompt = build_progress_prompt("what failed?", "line", 100);
+
+        assert!(prompt.input.contains("New command output"));
+        assert!(prompt.input.contains("Final question"));
+    }
+
+    #[test]
+    fn final_prompt_mentions_chained_progress_when_available() {
+        let prompt = build_final_prompt("what failed?", "line", 100, true);
+
+        assert!(prompt.input.contains("Responses conversation chain"));
+        assert!(prompt.input.contains("Retained final command output"));
     }
 }

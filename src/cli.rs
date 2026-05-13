@@ -1,9 +1,13 @@
+use crate::settings::ProgressMode;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(name = "distill")]
 #[command(about = "Compress command output into the answer an agent needs")]
+#[command(
+    override_usage = "distill [OPTIONS] <QUESTION>...\n       distill [OPTIONS] config [COMMAND]"
+)]
 pub struct Cli {
     /// Override the persisted config path.
     #[arg(long, global = true)]
@@ -29,9 +33,37 @@ pub struct Cli {
     #[arg(long)]
     pub max_output_tokens: Option<u32>,
 
+    /// Maximum output tokens for periodic progress summaries.
+    #[arg(long)]
+    pub progress_max_output_tokens: Option<u32>,
+
     /// Maximum command-output characters included in the model input.
     #[arg(long)]
     pub max_input_chars: Option<usize>,
+
+    /// Maximum command-output bytes retained locally while reading stdin.
+    #[arg(long)]
+    pub max_collected_bytes: Option<usize>,
+
+    /// Periodic progress behavior while reading upstream output.
+    #[arg(long, value_enum)]
+    pub progress_mode: Option<ProgressMode>,
+
+    /// Milliseconds between progress updates while reading upstream output.
+    #[arg(long)]
+    pub progress_interval_ms: Option<u64>,
+
+    /// Milliseconds to wait before treating a prompt-like output tail as interactive.
+    #[arg(long)]
+    pub interactive_detect_ms: Option<u64>,
+
+    /// Number of retries for transient API failures.
+    #[arg(long)]
+    pub retry_count: Option<u32>,
+
+    /// Initial retry backoff in milliseconds for transient API failures.
+    #[arg(long)]
+    pub retry_backoff_ms: Option<u64>,
 
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -74,7 +106,14 @@ pub enum ConfigKey {
     ApiKey,
     TimeoutMs,
     MaxOutputTokens,
+    ProgressMaxOutputTokens,
     MaxInputChars,
+    MaxCollectedBytes,
+    ProgressMode,
+    ProgressIntervalMs,
+    InteractiveDetectMs,
+    RetryCount,
+    RetryBackoffMs,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -84,7 +123,14 @@ pub struct CliOverrides {
     pub api_key: Option<String>,
     pub timeout_ms: Option<u64>,
     pub max_output_tokens: Option<u32>,
+    pub progress_max_output_tokens: Option<u32>,
     pub max_input_chars: Option<usize>,
+    pub max_collected_bytes: Option<usize>,
+    pub progress_mode: Option<ProgressMode>,
+    pub progress_interval_ms: Option<u64>,
+    pub interactive_detect_ms: Option<u64>,
+    pub retry_count: Option<u32>,
+    pub retry_backoff_ms: Option<u64>,
 }
 
 impl Cli {
@@ -95,7 +141,14 @@ impl Cli {
             api_key: self.api_key.clone(),
             timeout_ms: self.timeout_ms,
             max_output_tokens: self.max_output_tokens,
+            progress_max_output_tokens: self.progress_max_output_tokens,
             max_input_chars: self.max_input_chars,
+            max_collected_bytes: self.max_collected_bytes,
+            progress_mode: self.progress_mode,
+            progress_interval_ms: self.progress_interval_ms,
+            interactive_detect_ms: self.interactive_detect_ms,
+            retry_count: self.retry_count,
+            retry_backoff_ms: self.retry_backoff_ms,
         }
     }
 
