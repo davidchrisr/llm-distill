@@ -111,7 +111,7 @@ Build a macOS binary with writes confined to this project:
 scripts/sandboxed-build.sh
 ```
 
-The script runs `cargo fetch --locked` before entering the sandbox, then builds with `--offline` inside the sandbox.
+The script runs `cargo fetch --locked` in a network-enabled sandbox, then builds with `--offline` in a separate sandbox without network access.
 
 Install the binary to a user-writable bin directory:
 

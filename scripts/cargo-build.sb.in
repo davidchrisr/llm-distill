@@ -1,15 +1,40 @@
 (version 1)
 (deny default)
+(import "/System/Library/Sandbox/Profiles/bsd.sb")
 
 (allow process*)
 (allow sysctl-read)
 (allow mach-lookup)
 (allow signal (target self))
 
-(allow file-read* file-map-executable)
+(allow file-read* file-test-existence
+  (subpath "__PROJECT_DIR__")
+  (subpath "__HOME_DIR__")
+  (subpath "__CARGO_HOME__")
+  (subpath "__TMP_DIR__")
+  (subpath "__CARGO_TOOLCHAIN_DIR__")
+  (subpath "__RUSTC_TOOLCHAIN_DIR__")
+  (subpath "__XCODE_CONTENTS_DIR__")
+  (subpath "__DARWIN_TMP_DIR__")
+  (subpath "__DARWIN_TMP_REAL_DIR__")
+  (subpath "/private/etc/ssl")
+  (literal "/Library/Preferences/com.apple.dt.Xcode.plist"))
+
+(allow file-map-executable
+  (subpath "__PROJECT_DIR__")
+  (subpath "__HOME_DIR__")
+  (subpath "__CARGO_HOME__")
+  (subpath "__CARGO_TOOLCHAIN_DIR__")
+  (subpath "__RUSTC_TOOLCHAIN_DIR__")
+  (subpath "__XCODE_CONTENTS_DIR__"))
 
 (allow file-write*
   (literal "/dev/null"))
 
 (allow file-write* file-ioctl file-map-executable
-  (subpath "__PROJECT_DIR__"))
+  (subpath "__CARGO_HOME__")
+  (subpath "__HOME_DIR__")
+  (subpath "__TARGET_DIR__")
+  (subpath "__TMP_DIR__")
+  (subpath "__DARWIN_TMP_DIR__")
+  (subpath "__DARWIN_TMP_REAL_DIR__"))
