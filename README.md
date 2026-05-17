@@ -105,13 +105,25 @@ cargo test
 
 ## Sandboxed Build
 
-Build a macOS binary with writes confined to this project:
+Build a macOS binary with dependency and build writes confined to this project:
 
 ```sh
 scripts/sandboxed-build.sh
 ```
 
-The script runs `cargo fetch --locked` in a network-enabled sandbox, then builds with `--offline` in a separate sandbox without network access.
+The script generates sandbox profiles under `.local/`, then runs:
+
+- `cargo fetch --locked` in a network-enabled sandbox.
+- `cargo build --release --locked --offline` in a separate sandbox without network access.
+
+Both phases use project-local state:
+
+- `HOME=.local/home`
+- `CARGO_HOME=.local/cargo-home`
+- `CARGO_TARGET_DIR=.local/target` for the build phase
+- `TMPDIR=.local/tmp`
+
+The profiles import Apple's `bsd.sb` base profile, allow the project and resolved Rust toolchain paths, and allow the Xcode app contents, Darwin temp directory, system SSL config directory, and Xcode license plist needed by Apple's linker tooling. Host home is not used as `HOME` inside the sandbox.
 
 Install the binary to a user-writable bin directory:
 
