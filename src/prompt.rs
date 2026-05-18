@@ -135,7 +135,7 @@ fn instructions(watch_mode: bool) -> String {
         "If the requested format is JSON, return raw valid JSON only.",
         "For PASS, FAIL, SAFE, REVIEW, or UNSAFE requests, put the verdict first.",
         "When safety is ambiguous, choose the more cautious label and cite the risky line.",
-        "If the output is insufficient, say exactly: distill: insufficient information.",
+        "If the output is insufficient, say exactly: `distill: insufficient information.` and explain why",
     ]
     .join(" ")
 }
