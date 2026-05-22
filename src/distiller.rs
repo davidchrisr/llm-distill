@@ -5,9 +5,10 @@ use crate::output_collector::OutputCollector;
 use crate::prompt::{build_final_prompt, build_progress_prompt};
 use crate::settings::{EnvSettings, ProgressMode, RuntimeSettings, resolve_settings};
 use crate::text::{ensure_trailing_newline, has_prompt_like_tail, normalize_for_model};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use std::io::{self, IsTerminal, Read, Write};
 use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 pub async fn run(cli: Cli) -> Result<()> {
@@ -163,9 +164,9 @@ async fn read_stdin_with_progress(
 ) -> Result<ReadResult> {
     let (sender, receiver) = mpsc::channel();
     let progress_interval = Duration::from_millis(settings.progress_interval_ms);
-    let interactive_interval = match settings.interactive_detect_ms {
-        0 => progress_interval,
-        value => Duration::from_millis(value).min(progress_interval),
+    let mut summary_worker = match settings.progress_mode {
+        ProgressMode::Stats => SummaryWorker::disabled(),
+        ProgressMode::Summary => SummaryWorker::start(settings, question)?,
     };
 
     std::thread::spawn(move || {
@@ -175,16 +176,19 @@ async fn read_stdin_with_progress(
         loop {
             match stdin.read(&mut buffer) {
                 Ok(0) => {
-                    let _ = sender.send(Ok(Vec::new()));
+                    let _ = sender.send((Instant::now(), Ok(Vec::new())));
                     return;
                 }
                 Ok(size) => {
-                    if sender.send(Ok(buffer[..size].to_vec())).is_err() {
+                    if sender
+                        .send((Instant::now(), Ok(buffer[..size].to_vec())))
+                        .is_err()
+                    {
                         return;
                     }
                 }
                 Err(error) => {
-                    let _ = sender.send(Err(error));
+                    let _ = sender.send((Instant::now(), Err(error)));
                     return;
                 }
             }
@@ -194,56 +198,70 @@ async fn read_stdin_with_progress(
     let mut collector = OutputCollector::new(settings.max_collected_bytes);
     let mut interval_collector = OutputCollector::new(settings.max_collected_bytes);
     let mut snapshot_count = 0_u64;
-    let mut last_report = Instant::now();
-    let mut last_output = Instant::now();
-    let mut previous_response_id = None;
+    let started_at = Instant::now();
+    let mut next_report_at = started_at + progress_interval;
+    let mut last_output = started_at;
     let mut prompt_tail = String::new();
     let mut suspected_prompt_at = None;
-    let client = ResponsesClient::new(settings.timeout_ms)?;
 
     loop {
-        match receiver.recv_timeout(interactive_interval) {
-            Ok(Ok(chunk)) if chunk.is_empty() => break,
-            Ok(Ok(chunk)) => {
-                last_output = Instant::now();
+        summary_worker.drain_completed();
+
+        let now = Instant::now();
+        fail_if_interactive_prompt_expired_at(&prompt_tail, suspected_prompt_at, settings, now)?;
+
+        if now >= next_report_at {
+            report_progress(
+                settings,
+                &collector,
+                &mut interval_collector,
+                &mut snapshot_count,
+                last_output,
+                now,
+                &mut summary_worker,
+            )?;
+            next_report_at = next_progress_deadline(next_report_at, progress_interval, now);
+            continue;
+        }
+
+        let wait_until = next_interesting_deadline(next_report_at, suspected_prompt_at, settings);
+        let wait_duration = wait_until.saturating_duration_since(now);
+
+        match receiver.recv_timeout(wait_duration) {
+            Ok((_, Ok(chunk))) if chunk.is_empty() => break,
+            Ok((received_at, Ok(chunk))) => {
+                while received_at >= next_report_at {
+                    report_progress(
+                        settings,
+                        &collector,
+                        &mut interval_collector,
+                        &mut snapshot_count,
+                        last_output,
+                        next_report_at,
+                        &mut summary_worker,
+                    )?;
+                    next_report_at += progress_interval;
+                }
+
+                last_output = received_at;
                 collector.push(&chunk);
                 interval_collector.push(&chunk);
                 push_prompt_tail(&mut prompt_tail, &chunk);
                 if has_prompt_like_tail(&prompt_tail) {
-                    suspected_prompt_at = Some(Instant::now());
+                    suspected_prompt_at = Some(received_at);
                 } else {
                     suspected_prompt_at = None;
                 }
-                if last_report.elapsed() >= progress_interval {
-                    let mut report = ProgressReport {
-                        collector: &collector,
-                        interval_collector: &mut interval_collector,
-                        idle_duration: last_output.elapsed(),
-                        snapshot_count: &mut snapshot_count,
-                        previous_response_id: &mut previous_response_id,
-                    };
-                    report_progress(settings, question, &client, &mut report).await?;
-                    last_report = Instant::now();
-                }
             }
-            Ok(Err(error)) => return Err(error).context("failed to read stdin"),
+            Ok((_, Err(error))) => return Err(error).context("failed to read stdin"),
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                fail_if_interactive_prompt_expired(&prompt_tail, suspected_prompt_at, settings)?;
-                if last_report.elapsed() >= progress_interval {
-                    let mut report = ProgressReport {
-                        collector: &collector,
-                        interval_collector: &mut interval_collector,
-                        idle_duration: last_output.elapsed(),
-                        snapshot_count: &mut snapshot_count,
-                        previous_response_id: &mut previous_response_id,
-                    };
-                    report_progress(settings, question, &client, &mut report).await?;
-                    last_report = Instant::now();
-                }
+                continue;
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
+
+    let previous_response_id = summary_worker.finish()?;
 
     Ok(ReadResult {
         input: collector.materialize(),
@@ -264,10 +282,11 @@ fn push_prompt_tail(prompt_tail: &mut String, chunk: &[u8]) {
     *prompt_tail = tail;
 }
 
-fn fail_if_interactive_prompt_expired(
+fn fail_if_interactive_prompt_expired_at(
     prompt_tail: &str,
     suspected_prompt_at: Option<Instant>,
     settings: &RuntimeSettings,
+    now: Instant,
 ) -> Result<()> {
     if settings.interactive_detect_ms == 0 {
         return Ok(());
@@ -277,7 +296,8 @@ fn fail_if_interactive_prompt_expired(
         return Ok(());
     };
 
-    if suspected_prompt_at.elapsed() >= Duration::from_millis(settings.interactive_detect_ms)
+    if now.duration_since(suspected_prompt_at)
+        >= Duration::from_millis(settings.interactive_detect_ms)
         && has_prompt_like_tail(prompt_tail)
     {
         bail!("interactive prompt detected; do not pipe interactive commands through distill");
@@ -286,68 +306,334 @@ fn fail_if_interactive_prompt_expired(
     Ok(())
 }
 
-struct ProgressReport<'a> {
-    collector: &'a OutputCollector,
-    interval_collector: &'a mut OutputCollector,
-    idle_duration: Duration,
-    snapshot_count: &'a mut u64,
-    previous_response_id: &'a mut Option<String>,
+fn next_interesting_deadline(
+    next_report_at: Instant,
+    suspected_prompt_at: Option<Instant>,
+    settings: &RuntimeSettings,
+) -> Instant {
+    match (settings.interactive_detect_ms, suspected_prompt_at) {
+        (0, _) | (_, None) => next_report_at,
+        (interactive_detect_ms, Some(suspected_prompt_at)) => {
+            let prompt_deadline =
+                suspected_prompt_at + Duration::from_millis(interactive_detect_ms);
+            next_report_at.min(prompt_deadline)
+        }
+    }
 }
 
-async fn report_progress(
+fn next_progress_deadline(
+    mut next_report_at: Instant,
+    progress_interval: Duration,
+    now: Instant,
+) -> Instant {
+    while next_report_at <= now {
+        next_report_at += progress_interval;
+    }
+    next_report_at
+}
+
+fn report_progress(
     settings: &RuntimeSettings,
-    question: &str,
-    client: &ResponsesClient,
-    report: &mut ProgressReport<'_>,
+    collector: &OutputCollector,
+    interval_collector: &mut OutputCollector,
+    snapshot_count: &mut u64,
+    last_output: Instant,
+    report_at: Instant,
+    summary_worker: &mut SummaryWorker,
 ) -> Result<()> {
-    let idle_ms = report.idle_duration.as_millis();
+    let idle_duration = report_at.saturating_duration_since(last_output);
+    let idle_ms = idle_duration.as_millis();
 
     match settings.progress_mode {
         ProgressMode::Stats => {
             eprintln!(
-                "distill: reading {} bytes, {} lines ({}ms since last output)",
-                report.collector.total_bytes(),
-                report.collector.total_lines(),
+                "distill: read {} bytes, {} lines total ({}ms since last output)",
+                collector.total_bytes(),
+                collector.total_lines(),
                 idle_ms
             );
         }
         ProgressMode::Summary => {
-            if report.interval_collector.is_empty() {
+            if interval_collector.is_empty() {
                 return Ok(());
             }
 
-            *report.snapshot_count += 1;
-            eprintln!(
-                "distill: summarizing snapshot {} ({} bytes, {} lines, {}ms since last output)",
-                *report.snapshot_count,
-                report.collector.total_bytes(),
-                report.collector.total_lines(),
-                idle_ms
-            );
-
-            let raw_input = report.interval_collector.materialize();
-            let prompt = build_progress_prompt(
-                question,
-                &normalize_for_model(&raw_input),
-                settings.max_input_chars,
-            );
-            let output = client
-                .create_response(
-                    settings,
-                    &prompt,
-                    settings.progress_max_output_tokens,
-                    report.previous_response_id.as_deref(),
-                )
-                .await?;
-            *report.previous_response_id = output.id.clone();
-            eprintln!(
-                "distill: snapshot {}: {}",
-                *report.snapshot_count,
-                output.text.trim()
-            );
-            *report.interval_collector = OutputCollector::new(settings.max_collected_bytes);
+            *snapshot_count += 1;
+            let snapshot = ProgressSnapshot {
+                number: *snapshot_count,
+                total_bytes: collector.total_bytes(),
+                total_lines: collector.total_lines(),
+                idle_duration,
+                raw_input: interval_collector.materialize(),
+                start_reported: false,
+            };
+            summary_worker.enqueue(snapshot)?;
+            *interval_collector = OutputCollector::new(settings.max_collected_bytes);
         }
     }
 
     Ok(())
+}
+
+struct ProgressSnapshot {
+    number: u64,
+    total_bytes: usize,
+    total_lines: usize,
+    idle_duration: Duration,
+    raw_input: String,
+    start_reported: bool,
+}
+
+struct SummaryWorker {
+    sender: Option<mpsc::Sender<ProgressSnapshot>>,
+    completed_receiver: mpsc::Receiver<()>,
+    handle: Option<thread::JoinHandle<Result<Option<String>>>>,
+    active_count: usize,
+}
+
+impl SummaryWorker {
+    fn disabled() -> Self {
+        let (_sender, completed_receiver) = mpsc::channel();
+        Self {
+            sender: None,
+            completed_receiver,
+            handle: None,
+            active_count: 0,
+        }
+    }
+
+    #[cfg(test)]
+    fn for_tests() -> (Self, mpsc::Receiver<ProgressSnapshot>, mpsc::Sender<()>) {
+        let (sender, receiver) = mpsc::channel::<ProgressSnapshot>();
+        let (completed_sender, completed_receiver) = mpsc::channel::<()>();
+        (
+            Self {
+                sender: Some(sender),
+                completed_receiver,
+                handle: None,
+                active_count: 0,
+            },
+            receiver,
+            completed_sender,
+        )
+    }
+
+    fn start(settings: &RuntimeSettings, question: &str) -> Result<Self> {
+        let (sender, receiver) = mpsc::channel::<ProgressSnapshot>();
+        let (completed_sender, completed_receiver) = mpsc::channel::<()>();
+        let settings = settings.clone();
+        let question = question.to_string();
+        let handle = thread::Builder::new()
+            .name("distill-progress-summary".to_string())
+            .spawn(move || run_summary_worker(settings, question, receiver, completed_sender))
+            .context("failed to start progress summary worker")?;
+
+        Ok(Self {
+            sender: Some(sender),
+            completed_receiver,
+            handle: Some(handle),
+            active_count: 0,
+        })
+    }
+
+    fn enqueue(&mut self, mut snapshot: ProgressSnapshot) -> Result<()> {
+        self.drain_completed();
+        let state = if self.active_count == 0 {
+            "summarizing"
+        } else {
+            "queued"
+        };
+        eprintln!("{}", snapshot_status_line(&snapshot, state));
+        snapshot.start_reported = self.active_count == 0;
+        let sender = self
+            .sender
+            .as_ref()
+            .ok_or_else(|| anyhow!("progress summary worker is closed"))?;
+        sender
+            .send(snapshot)
+            .context("failed to queue progress summary")?;
+        self.active_count += 1;
+        Ok(())
+    }
+
+    fn drain_completed(&mut self) {
+        while self.completed_receiver.try_recv().is_ok() {
+            self.active_count = self.active_count.saturating_sub(1);
+        }
+    }
+
+    fn finish(mut self) -> Result<Option<String>> {
+        self.sender.take();
+        let Some(handle) = self.handle.take() else {
+            return Ok(None);
+        };
+        handle
+            .join()
+            .map_err(|_| anyhow!("progress summary worker panicked"))?
+    }
+}
+
+fn run_summary_worker(
+    settings: RuntimeSettings,
+    question: String,
+    receiver: mpsc::Receiver<ProgressSnapshot>,
+    completed_sender: mpsc::Sender<()>,
+) -> Result<Option<String>> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("failed to start progress summary runtime")?;
+
+    runtime.block_on(async move {
+        let client = ResponsesClient::new(settings.timeout_ms)?;
+        let mut previous_response_id = None;
+
+        for snapshot in receiver {
+            if !snapshot.start_reported {
+                eprintln!("{}", snapshot_status_line(&snapshot, "summarizing"));
+            }
+
+            let prompt = build_progress_prompt(
+                &question,
+                &normalize_for_model(&snapshot.raw_input),
+                settings.max_input_chars,
+            );
+            let output = client
+                .create_response(
+                    &settings,
+                    &prompt,
+                    settings.progress_max_output_tokens,
+                    previous_response_id.as_deref(),
+                )
+                .await?;
+            previous_response_id = output.id.clone();
+            eprintln!(
+                "distill: snapshot {}: {}",
+                snapshot.number,
+                output.text.trim()
+            );
+            let _ = completed_sender.send(());
+        }
+
+        Ok(previous_response_id)
+    })
+}
+
+fn snapshot_status_line(snapshot: &ProgressSnapshot, state: &str) -> String {
+    format!(
+        "distill: snapshot {}: {} ({} bytes, {} lines total, {}ms since last output)",
+        snapshot.number,
+        state,
+        snapshot.total_bytes,
+        snapshot.total_lines,
+        snapshot.idle_duration.as_millis()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn next_progress_deadline_preserves_interval_schedule() {
+        let first_deadline = Instant::now() + Duration::from_millis(20);
+        let interval = Duration::from_millis(20);
+        let delayed_until = first_deadline + Duration::from_millis(55);
+
+        let next_deadline = next_progress_deadline(first_deadline, interval, delayed_until);
+
+        assert_eq!(next_deadline, first_deadline + Duration::from_millis(60));
+    }
+
+    #[test]
+    fn next_interesting_deadline_prefers_earlier_interactive_deadline() {
+        let now = Instant::now();
+        let next_report_at = now + Duration::from_millis(20_000);
+        let suspected_prompt_at = now + Duration::from_millis(5_000);
+        let settings = settings_with_interactive_detect_ms(10_000);
+
+        let deadline =
+            next_interesting_deadline(next_report_at, Some(suspected_prompt_at), &settings);
+
+        assert_eq!(deadline, now + Duration::from_millis(15_000));
+    }
+
+    #[test]
+    fn next_interesting_deadline_uses_report_deadline_when_interactive_detection_disabled() {
+        let now = Instant::now();
+        let next_report_at = now + Duration::from_millis(20_000);
+        let suspected_prompt_at = now + Duration::from_millis(5_000);
+        let settings = settings_with_interactive_detect_ms(0);
+
+        let deadline =
+            next_interesting_deadline(next_report_at, Some(suspected_prompt_at), &settings);
+
+        assert_eq!(deadline, next_report_at);
+    }
+
+    #[test]
+    fn snapshot_status_line_uses_stable_snapshot_metadata() {
+        let snapshot = ProgressSnapshot {
+            number: 2,
+            total_bytes: 87_826,
+            total_lines: 647,
+            idle_duration: Duration::from_millis(12_000),
+            raw_input: "ignored".to_string(),
+            start_reported: false,
+        };
+
+        assert_eq!(
+            snapshot_status_line(&snapshot, "queued"),
+            "distill: snapshot 2: queued (87826 bytes, 647 lines total, 12000ms since last output)"
+        );
+    }
+
+    #[test]
+    fn summary_worker_marks_second_snapshot_as_queued_until_completion_is_drained() {
+        let (mut worker, receiver, completed_sender) = SummaryWorker::for_tests();
+
+        worker.enqueue(snapshot(1)).unwrap();
+        let first = receiver.recv().unwrap();
+        assert!(first.start_reported);
+        assert_eq!(worker.active_count, 1);
+
+        worker.enqueue(snapshot(2)).unwrap();
+        let second = receiver.recv().unwrap();
+        assert!(!second.start_reported);
+        assert_eq!(worker.active_count, 2);
+
+        completed_sender.send(()).unwrap();
+        worker.drain_completed();
+
+        assert_eq!(worker.active_count, 1);
+    }
+
+    fn snapshot(number: u64) -> ProgressSnapshot {
+        ProgressSnapshot {
+            number,
+            total_bytes: number as usize,
+            total_lines: number as usize,
+            idle_duration: Duration::from_millis(number),
+            raw_input: format!("snapshot {number}"),
+            start_reported: false,
+        }
+    }
+
+    fn settings_with_interactive_detect_ms(interactive_detect_ms: u64) -> RuntimeSettings {
+        RuntimeSettings {
+            model: "test-model".to_string(),
+            api_base: "http://localhost".to_string(),
+            api_key: "test-key".to_string(),
+            timeout_ms: 1_000,
+            max_output_tokens: 100,
+            progress_max_output_tokens: 50,
+            max_input_chars: 1_000,
+            max_collected_bytes: 10_000,
+            progress_mode: ProgressMode::Stats,
+            progress_interval_ms: 20_000,
+            interactive_detect_ms,
+            retry_count: 0,
+            retry_backoff_ms: 1,
+        }
+    }
 }
