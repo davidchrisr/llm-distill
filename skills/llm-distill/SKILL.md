@@ -50,10 +50,10 @@ docker exec my-container sh -c "actual command 2>&1" | distill "Return PASS/FAIL
 
 This matters in agent sandboxes that split commands at pipes. The upstream command and `distill` may need separate approvals or prefix rules. Keep the upstream segment whitelistable, and prefer a narrow saved prefix for `distill` itself, for example `["distill"]`, rather than broad shell or language-runtime prefixes.
 
-For context gathering, use scoped and directed searches first, then pipe to `distill` as a safety net when output may still be large. Tell `distill` what you are looking for:
+For context gathering in containerized workspaces, run scoped and directed `rg` searches inside the relevant container, then pipe the outer Docker command to `distill`. Put `2>&1` inside the container shell payload when stderr should be summarized. Tell `distill` what you are looking for:
 
 ```sh
-rg -n "InvoiceService|createInvoice|invoice total" src tests \
+docker exec my-container sh -c "cd /workspace && rg -n 'InvoiceService|createInvoice|invoice total' src tests 2>&1" \
   | distill --max-output-tokens 900 \
     "I am investigating how invoices are created and totals are calculated. Summarize only matches relevant to that goal. Return likely relevant files, key symbols/functions, repeated patterns, and 5-8 next files or symbols to inspect. Do not list every match."
 ```
