@@ -65,6 +65,18 @@ pub struct Cli {
     #[arg(long)]
     pub retry_backoff_ms: Option<u64>,
 
+    /// Print the final response ID to stderr for later follow-up questions.
+    #[arg(short = 'r', long)]
+    pub resumable: bool,
+
+    /// Continue from a previous OpenAI Responses API response ID.
+    #[arg(short = 'p', long)]
+    pub prev_response_id: Option<String>,
+
+    /// Do not read stdin; answer using only the previous response context.
+    #[arg(short = 'c', long)]
+    pub from_context: bool,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 

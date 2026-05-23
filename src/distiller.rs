@@ -2,7 +2,10 @@ use crate::cli::{Cli, Command, ConfigAction};
 use crate::config_file;
 use crate::openai::ResponsesClient;
 use crate::output_collector::OutputCollector;
-use crate::prompt::{build_final_prompt, build_progress_prompt};
+use crate::prompt::{
+    build_context_followup_prompt, build_empty_output_prompt, build_final_prompt,
+    build_progress_prompt,
+};
 use crate::settings::{EnvSettings, ProgressMode, RuntimeSettings, resolve_settings};
 use crate::text::{ensure_trailing_newline, has_prompt_like_tail, normalize_for_model};
 use anyhow::{Context, Result, anyhow, bail};
@@ -119,7 +122,12 @@ pub async fn run(cli: Cli) -> Result<()> {
         bail!("a question is required");
     }
 
-    if io::stdin().is_terminal() {
+    if cli.from_context && cli.prev_response_id.is_none() {
+        bail!("--from-context requires --prev-response-id");
+    }
+
+    let stdin_is_terminal = io::stdin().is_terminal();
+    if !cli.from_context && stdin_is_terminal {
         bail!("stdin is required");
     }
 
@@ -127,29 +135,57 @@ pub async fn run(cli: Cli) -> Result<()> {
     let settings = resolve_settings(&persisted, &EnvSettings::current(), &cli.overrides());
     settings.validate()?;
 
-    let read_result = read_stdin_with_progress(&settings, &question).await?;
+    let read_result = if cli.from_context {
+        ReadResult {
+            input: String::new(),
+            previous_response_id: None,
+        }
+    } else {
+        read_stdin_with_progress(&settings, &question).await?
+    };
 
-    if read_result.input.trim().is_empty() {
+    let has_progress_context = read_result.previous_response_id.is_some();
+    let has_previous_context = cli.prev_response_id.is_some();
+    let retained_input = read_result.input.trim();
+
+    if retained_input.is_empty() && !has_progress_context && !has_previous_context {
         return Ok(());
     }
 
-    let prompt = build_final_prompt(
-        &question,
-        &normalize_for_model(&read_result.input),
-        settings.max_input_chars,
-        read_result.previous_response_id.is_some(),
-    );
+    let prompt = if cli.from_context {
+        build_context_followup_prompt(&question)
+    } else if retained_input.is_empty() {
+        build_empty_output_prompt(&question, has_progress_context, has_previous_context)
+    } else {
+        build_final_prompt(
+            &question,
+            &normalize_for_model(&read_result.input),
+            settings.max_input_chars,
+            has_progress_context,
+            has_previous_context,
+        )
+    };
     let client = ResponsesClient::new(settings.timeout_ms)?;
+    let previous_response_id = read_result
+        .previous_response_id
+        .as_deref()
+        .or(cli.prev_response_id.as_deref());
     let output = client
         .create_response(
             &settings,
             &prompt,
             settings.max_output_tokens,
-            read_result.previous_response_id.as_deref(),
+            previous_response_id,
         )
         .await?;
 
     io::stdout().write_all(ensure_trailing_newline(output.text.trim()).as_bytes())?;
+    if cli.resumable {
+        match output.id {
+            Some(id) => eprintln!("distill: response id: {id}"),
+            None => eprintln!("distill: response id unavailable"),
+        }
+    }
     Ok(())
 }
 

@@ -26,8 +26,14 @@ Persisted config uses the platform config directory for `llm-distill`.
 ## Usage
 
 ```sh
+cmd | distill "Did it pass? Return PASS or FAIL with failing test names."
+cargo test | distill --model gpt-5.4-mini --api-base https://api.openai.com/v1 "Summarize failures."
+```
+
+Pipe stdout into `distill` by default. Merge stderr only when stderr is noisy enough that it should be summarized instead of shown directly:
+
+```sh
 cmd 2>&1 | distill "Did it pass? Return PASS or FAIL with failing test names."
-cargo test 2>&1 | distill --model gpt-5.4-mini --api-base https://api.openai.com/v1 "Summarize failures."
 ```
 
 Configuration uses explicit verbs:
@@ -74,6 +80,26 @@ Environment variables:
 - `max-collected-bytes` bounds local command-output retention. Large output keeps head and tail with an omission marker.
 - `interactive-detect-ms` errors if output appears to be waiting at an interactive prompt for that long. Set it to `0` to disable the guard.
 - `retry-count` and `retry-backoff-ms` apply to transient API failures only.
+
+## Follow-Up Questions
+
+Use `--resumable` or `-r` to print the final Responses API response ID to stderr:
+
+```sh
+long-command | distill -r "Return PASS/FAIL and root-cause errors."
+```
+
+Use `--prev-response-id` or `-p` to continue from that response. Add `--from-context` or `-c` when asking a follow-up without new stdin:
+
+```sh
+distill -c -p resp_123 -r "Which warning is actionable?"
+```
+
+If new command output is available, pipe it and pass the previous response ID:
+
+```sh
+next-command | distill -p resp_123 -r "Compare this output with the previous run."
+```
 
 ## Local Development
 
@@ -139,32 +165,6 @@ distill --help
 distill config show
 ```
 
-## AGENTS.md Usage
+## Agent Usage
 
-For agent sessions, add this project note to `AGENTS.md`:
-
-````md
-## llm-distill Usage
-
-- Use `distill` to reduce token usage when command output is only needed as agent context.
-- Pipe long, non-interactive command output through `distill` before reading it into the conversation.
-- Give `distill` an explicit task. State what the agent needs to know and what shape the distilled output should have.
-- `distill` waits for upstream EOF before printing the final answer to stdout.
-- If upstream output is empty or whitespace only, `distill` exits successfully without printing a final answer.
-- Local command-output retention is bounded by `max-collected-bytes`; large output keeps head and tail with an omission marker.
-- Progress goes to stderr. Use `progress-mode=stats` for periodic byte/line counts, or `progress-mode=summary` for periodic interim summaries.
-- Summary progress uses Responses API chaining for interim summaries and `progress-max-output-tokens` for the interim output budget. The final answer still uses `max-output-tokens`.
-- `progress-mode=stats` makes no extra model calls. `progress-mode=summary` can make one model call per progress interval that has new output, plus the final call, so use it only when interim model-readable status is worth the added cost.
-- If output appears to end at an interactive prompt for `interactive-detect-ms`, `distill` exits with an error instead of waiting indefinitely. Set `interactive-detect-ms` to `0` to disable this guard.
-- Tune behavior with CLI flags, `DISTILL_*` env vars, or persisted config. Common knobs: `progress-mode`, `progress-interval-ms`, `progress-max-output-tokens`, `max-collected-bytes`, `interactive-detect-ms`, `retry-count`, and `retry-backoff-ms`.
-
-  ```sh
-  cargo test 2>&1 | distill "Did the tests pass? Return PASS or FAIL, followed by failing test names if any."
-  cargo build 2>&1 | distill --progress-mode summary --progress-interval-ms 30000 "Track build progress and failures."
-  git diff 2>&1 | distill "List changed files and one concise summary for each."
-  rg -n "TODO|FIXME" . 2>&1 | distill "Return only file paths, one per line."
-  ```
-
-- Skip `distill` when exact raw output is required, the command is intentionally interactive, or the output is already small enough for direct agent context.
-- Wait for `distill` to finish before continuing.
-````
+For agent sessions, install and use `skills/llm-distill` skill.

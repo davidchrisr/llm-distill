@@ -31,11 +31,19 @@ pub fn build_final_prompt(
     retained_output: &str,
     max_input_chars: usize,
     has_progress_context: bool,
+    has_previous_context: bool,
 ) -> Prompt {
-    let context_note = if has_progress_context {
-        "Earlier progress summaries are available in the Responses conversation chain. Use them together with the retained final command output below."
-    } else {
-        "No earlier progress summaries are available."
+    let context_note = match (has_progress_context, has_previous_context) {
+        (true, true) => {
+            "A previous response chain and earlier progress summaries are available. Use them together with the retained final command output below."
+        }
+        (true, false) => {
+            "Earlier progress summaries are available in the Responses conversation chain. Use them together with the retained final command output below."
+        }
+        (false, true) => {
+            "A previous response chain is available. Use it together with the retained final command output below."
+        }
+        (false, false) => "No earlier progress summaries or previous response chain are available.",
     };
 
     Prompt {
@@ -45,6 +53,40 @@ pub fn build_final_prompt(
             fit_input(retained_output, max_input_chars),
             question.trim()
         ),
+    }
+}
+
+pub fn build_context_followup_prompt(question: &str) -> Prompt {
+    Prompt {
+        instructions: instructions(false),
+        input: format!(
+            "No new command output was provided. Use the previous response chain as context.\n\nQuestion:\n{}",
+            question.trim()
+        ),
+    }
+}
+
+pub fn build_empty_output_prompt(
+    question: &str,
+    has_progress_context: bool,
+    has_previous_context: bool,
+) -> Prompt {
+    let context_note = match (has_progress_context, has_previous_context) {
+        (true, true) => {
+            "No retained final command output was available. A previous response chain and earlier progress summaries are available."
+        }
+        (true, false) => {
+            "No retained final command output was available. Earlier progress summaries are available in the Responses conversation chain."
+        }
+        (false, true) => {
+            "No new command output was provided. Use the previous response chain as context."
+        }
+        (false, false) => "No command output was provided.",
+    };
+
+    Prompt {
+        instructions: instructions(false),
+        input: format!("{context_note}\n\nQuestion:\n{}", question.trim()),
     }
 }
 
@@ -174,9 +216,33 @@ mod tests {
 
     #[test]
     fn final_prompt_mentions_chained_progress_when_available() {
-        let prompt = build_final_prompt("what failed?", "line", 100, true);
+        let prompt = build_final_prompt("what failed?", "line", 100, true, false);
 
         assert!(prompt.input.contains("Responses conversation chain"));
         assert!(prompt.input.contains("Retained final command output"));
+    }
+
+    #[test]
+    fn final_prompt_mentions_previous_response_context_when_available() {
+        let prompt = build_final_prompt("what failed?", "line", 100, false, true);
+
+        assert!(prompt.input.contains("previous response chain"));
+        assert!(prompt.input.contains("Retained final command output"));
+    }
+
+    #[test]
+    fn context_followup_prompt_marks_missing_new_output() {
+        let prompt = build_context_followup_prompt("what failed?");
+
+        assert!(prompt.input.contains("No new command output was provided"));
+        assert!(prompt.input.contains("previous response chain"));
+    }
+
+    #[test]
+    fn empty_output_prompt_can_use_previous_response_context() {
+        let prompt = build_empty_output_prompt("what failed?", false, true);
+
+        assert!(prompt.input.contains("No new command output was provided"));
+        assert!(prompt.input.contains("previous response chain"));
     }
 }
