@@ -5,6 +5,8 @@ use reqwest::StatusCode;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::error::Error;
+use std::io;
 use std::time::Duration;
 
 #[derive(Clone)]
@@ -115,7 +117,8 @@ impl ResponseError {
     fn is_retryable(&self) -> bool {
         match self {
             Self::Request(error) | Self::Read(error) => {
-                error.is_timeout() || error.is_connect() || error.is_request()
+                !contains_permission_denied(error)
+                    && (error.is_timeout() || error.is_connect() || error.is_request())
             }
             Self::Status { status, .. } => matches!(
                 *status,
@@ -133,6 +136,9 @@ impl ResponseError {
 
     fn into_result<T>(self) -> Result<T> {
         match self {
+            Self::Request(error) if contains_permission_denied(&error) => {
+                anyhow::bail!("distill: error: network access denied")
+            }
             Self::Request(error) => Err(error).context("request to Responses API failed"),
             Self::Read(error) => Err(error).context("failed to read response"),
             Self::Status { status, payload } => {
@@ -141,6 +147,19 @@ impl ResponseError {
             Self::Payload(error) | Self::Other(error) => Err(error),
         }
     }
+}
+
+fn contains_permission_denied(error: &(dyn Error + 'static)) -> bool {
+    let mut current = Some(error);
+
+    while let Some(error) = current {
+        if let Some(io_error) = error.downcast_ref::<io::Error>() {
+            return io_error.kind() == io::ErrorKind::PermissionDenied;
+        }
+        current = error.source();
+    }
+
+    false
 }
 
 impl From<anyhow::Error> for ResponseError {
@@ -294,5 +313,19 @@ mod tests {
         let value = responses_request_json("model", &prompt, 128, None).unwrap();
 
         assert!(value.get("previous_response_id").is_none());
+    }
+
+    #[test]
+    fn detects_permission_denied_in_error_chain() {
+        let error = anyhow::anyhow!(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+
+        assert!(contains_permission_denied(error.as_ref()));
+    }
+
+    #[test]
+    fn ignores_non_permission_denied_io_errors() {
+        let error = anyhow::anyhow!(std::io::Error::from(std::io::ErrorKind::ConnectionRefused));
+
+        assert!(!contains_permission_denied(error.as_ref()));
     }
 }
