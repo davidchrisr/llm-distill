@@ -45,7 +45,7 @@ distill config set model gpt-5.4-mini
 distill config set api-base https://api.openai.com/v1
 distill config set timeout-ms 90000
 distill config set progress-max-output-tokens 128
-distill config set max-input-chars 24000
+distill config set max-input-chars 100000
 distill config set max-collected-bytes 1048576
 distill config set progress-mode stats
 distill config set progress-interval-ms 30000
