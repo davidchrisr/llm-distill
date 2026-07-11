@@ -76,6 +76,10 @@ impl ResponsesClient {
         let url = responses_url(&settings.api_base)?;
         let request = ResponsesRequest {
             model: &settings.model,
+            reasoning: settings
+                .reasoning_effort
+                .as_ref()
+                .map(|effort| Reasoning { effort }),
             instructions: &prompt.instructions,
             input: &prompt.input,
             max_output_tokens,
@@ -177,6 +181,8 @@ pub struct ResponseOutput {
 #[derive(Debug, Serialize)]
 struct ResponsesRequest<'a> {
     model: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<Reasoning<'a>>,
     instructions: &'a str,
     input: &'a str,
     max_output_tokens: u32,
@@ -184,15 +190,22 @@ struct ResponsesRequest<'a> {
     previous_response_id: Option<&'a str>,
 }
 
+#[derive(Debug, Serialize)]
+struct Reasoning<'a> {
+    effort: &'a str,
+}
+
 #[cfg(test)]
 fn responses_request_json(
     model: &str,
+    reasoning_effort: Option<&str>,
     prompt: &Prompt,
     max_output_tokens: u32,
     previous_response_id: Option<&str>,
 ) -> Result<Value> {
     let request = ResponsesRequest {
         model,
+        reasoning: reasoning_effort.map(|effort| Reasoning { effort }),
         instructions: &prompt.instructions,
         input: &prompt.input,
         max_output_tokens,
@@ -298,7 +311,8 @@ mod tests {
             instructions: "instructions".to_string(),
             input: "input".to_string(),
         };
-        let value = responses_request_json("model", &prompt, 128, Some("resp_previous")).unwrap();
+        let value =
+            responses_request_json("model", None, &prompt, 128, Some("resp_previous")).unwrap();
 
         assert_eq!(value["previous_response_id"], "resp_previous");
         assert_eq!(value["max_output_tokens"], 128);
@@ -310,9 +324,22 @@ mod tests {
             instructions: "instructions".to_string(),
             input: "input".to_string(),
         };
-        let value = responses_request_json("model", &prompt, 128, None).unwrap();
+        let value = responses_request_json("model", None, &prompt, 128, None).unwrap();
 
         assert!(value.get("previous_response_id").is_none());
+        assert!(value.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn serializes_reasoning_effort_when_present() {
+        let prompt = Prompt {
+            instructions: "instructions".to_string(),
+            input: "input".to_string(),
+        };
+        let value =
+            responses_request_json("model", Some("future-effort"), &prompt, 128, None).unwrap();
+
+        assert_eq!(value["reasoning"]["effort"], "future-effort");
     }
 
     #[test]

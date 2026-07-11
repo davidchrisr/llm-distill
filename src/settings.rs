@@ -26,6 +26,8 @@ pub enum ProgressMode {
     Summary,
 }
 
+pub const DEFAULT_REASONING_EFFORT: &str = "low";
+
 impl fmt::Display for ProgressMode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -51,6 +53,7 @@ impl FromStr for ProgressMode {
 #[serde(rename_all = "kebab-case")]
 pub struct PersistedSettings {
     pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub api_base: Option<String>,
     pub api_key: Option<String>,
     pub timeout_ms: Option<u64>,
@@ -68,6 +71,7 @@ pub struct PersistedSettings {
 #[derive(Debug, Clone, Default)]
 pub struct EnvSettings {
     pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub api_base: Option<String>,
     pub api_key: Option<String>,
     pub timeout_ms: Option<u64>,
@@ -85,6 +89,7 @@ pub struct EnvSettings {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RuntimeSettings {
     pub model: String,
+    pub reasoning_effort: Option<String>,
     pub api_base: String,
     pub api_key: String,
     pub timeout_ms: u64,
@@ -122,6 +127,7 @@ impl EnvSettings {
 
             match key.to_string_lossy().as_ref() {
                 "DISTILL_MODEL" => env.model = Some(value),
+                "DISTILL_REASONING_EFFORT" => env.reasoning_effort = Some(value),
                 "DISTILL_API_BASE" => env.api_base = Some(value),
                 "DISTILL_API_KEY" => env.api_key = Some(value),
                 "DISTILL_TIMEOUT_MS" => env.timeout_ms = value.parse().ok(),
@@ -157,6 +163,15 @@ pub fn resolve_settings(
             Some(DEFAULT_MODEL),
         ])
         .to_string(),
+        reasoning_effort: Some(
+            first_non_empty([
+                cli.reasoning_effort.as_deref(),
+                env.reasoning_effort.as_deref(),
+                persisted.reasoning_effort.as_deref(),
+                Some(DEFAULT_REASONING_EFFORT),
+            ])
+            .to_string(),
+        ),
         api_base: trim_trailing_slash(first_non_empty([
             cli.api_base.as_deref(),
             env.api_base.as_deref(),
@@ -270,6 +285,7 @@ mod tests {
     fn resolves_defaults_file_env_and_cli_in_order() {
         let persisted = PersistedSettings {
             model: Some("file-model".to_string()),
+            reasoning_effort: Some("file-effort".to_string()),
             api_base: Some("https://file.test/v1/".to_string()),
             api_key: Some("file-key".to_string()),
             timeout_ms: Some(10),
@@ -285,6 +301,7 @@ mod tests {
         };
         let env = EnvSettings {
             model: Some("env-model".to_string()),
+            reasoning_effort: Some("env-effort".to_string()),
             api_base: Some("https://env.test/v1".to_string()),
             api_key: Some("env-key".to_string()),
             timeout_ms: Some(30),
@@ -300,6 +317,7 @@ mod tests {
         };
         let cli = CliOverrides {
             model: Some("cli-model".to_string()),
+            reasoning_effort: Some("future-effort".to_string()),
             api_base: None,
             api_key: None,
             timeout_ms: Some(50),
@@ -318,6 +336,7 @@ mod tests {
             resolve_settings(&persisted, &env, &cli),
             RuntimeSettings {
                 model: "cli-model".to_string(),
+                reasoning_effort: Some("future-effort".to_string()),
                 api_base: "https://env.test/v1".to_string(),
                 api_key: "env-key".to_string(),
                 timeout_ms: 50,
@@ -387,6 +406,7 @@ mod tests {
         );
 
         assert!(settings.validate().is_ok());
+        assert_eq!(settings.reasoning_effort.as_deref(), Some("low"));
 
         settings.max_output_tokens = 0;
         assert!(settings.validate().is_err());

@@ -17,6 +17,10 @@ pub struct Cli {
     #[arg(long)]
     pub model: Option<String>,
 
+    /// Reasoning effort requested from supported models.
+    #[arg(long)]
+    pub reasoning_effort: Option<String>,
+
     /// API base URL. The Responses path is appended by the client.
     #[arg(long)]
     pub api_base: Option<String>,
@@ -114,6 +118,7 @@ pub enum ConfigAction {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum ConfigKey {
     Model,
+    ReasoningEffort,
     ApiBase,
     ApiKey,
     TimeoutMs,
@@ -131,6 +136,7 @@ pub enum ConfigKey {
 #[derive(Debug, Clone, Default)]
 pub struct CliOverrides {
     pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub api_base: Option<String>,
     pub api_key: Option<String>,
     pub timeout_ms: Option<u64>,
@@ -149,6 +155,7 @@ impl Cli {
     pub fn overrides(&self) -> CliOverrides {
         CliOverrides {
             model: self.model.clone(),
+            reasoning_effort: self.reasoning_effort.clone(),
             api_base: self.api_base.clone(),
             api_key: self.api_key.clone(),
             timeout_ms: self.timeout_ms,

@@ -43,6 +43,7 @@ pub fn write_config(path: &Path, config: &PersistedSettings) -> Result<()> {
 pub fn get_value(config: &PersistedSettings, key: ConfigKey) -> Option<String> {
     match key {
         ConfigKey::Model => config.model.clone(),
+        ConfigKey::ReasoningEffort => config.reasoning_effort.clone(),
         ConfigKey::ApiBase => config.api_base.clone(),
         ConfigKey::ApiKey => config.api_key.as_ref().map(|_| "***".to_string()),
         ConfigKey::TimeoutMs => config.timeout_ms.map(|value| value.to_string()),
@@ -65,6 +66,9 @@ pub fn get_value(config: &PersistedSettings, key: ConfigKey) -> Option<String> {
 pub fn set_value(config: &mut PersistedSettings, key: ConfigKey, value: &str) -> Result<()> {
     match key {
         ConfigKey::Model => config.model = Some(non_empty(value, "model")?),
+        ConfigKey::ReasoningEffort => {
+            config.reasoning_effort = Some(non_empty(value, "reasoning-effort")?)
+        }
         ConfigKey::ApiBase => config.api_base = Some(non_empty(value, "api-base")?),
         ConfigKey::ApiKey => config.api_key = Some(non_empty(value, "api-key")?),
         ConfigKey::TimeoutMs => config.timeout_ms = Some(parse_positive(value, "timeout-ms")?),

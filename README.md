@@ -22,6 +22,8 @@ The `api-base` setting is the base URL for API requests. The runtime appends the
 API resource path itself. For OpenAI, the default API base is `https://api.openai.com/v1`.
 
 Persisted config uses the platform config directory for `llm-distill`.
+Reasoning effort defaults to `low` and can be overridden by config, environment, or CLI.
+The effort value is passed through to the API without restricting it to a fixed list.
 
 ## Usage
 
@@ -42,6 +44,7 @@ Configuration uses explicit verbs:
 distill config show
 distill config get model
 distill config set model gpt-5.4-mini
+distill config set reasoning-effort medium
 distill config set api-base https://api.openai.com/v1
 distill config set timeout-ms 90000
 distill config set progress-max-output-tokens 128
@@ -57,6 +60,7 @@ distill config set retry-backoff-ms 1000
 Environment variables:
 
 - `DISTILL_MODEL`
+- `DISTILL_REASONING_EFFORT`
 - `DISTILL_API_BASE`
 - `DISTILL_API_KEY`
 - `DISTILL_TIMEOUT_MS`

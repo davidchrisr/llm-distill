@@ -26,6 +26,10 @@ pub async fn run(cli: Cli) -> Result<()> {
             ConfigAction::Show => {
                 println!("path={}", config_path.display());
                 println!("model={}", persisted.model.as_deref().unwrap_or(""));
+                println!(
+                    "reasoning-effort={}",
+                    persisted.reasoning_effort.clone().unwrap_or_default()
+                );
                 println!("api-base={}", persisted.api_base.as_deref().unwrap_or(""));
                 println!(
                     "api-key={}",
@@ -658,6 +662,7 @@ mod tests {
     fn settings_with_interactive_detect_ms(interactive_detect_ms: u64) -> RuntimeSettings {
         RuntimeSettings {
             model: "test-model".to_string(),
+            reasoning_effort: None,
             api_base: "http://localhost".to_string(),
             api_key: "test-key".to_string(),
             timeout_ms: 1_000,
