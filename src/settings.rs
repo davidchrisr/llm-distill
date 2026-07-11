@@ -7,7 +7,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::str::FromStr;
 
-pub const DEFAULT_MODEL: &str = "gpt-5.4-mini";
+pub const DEFAULT_MODEL: &str = "gpt-5.6-luna";
 pub const DEFAULT_API_BASE: &str = "https://api.openai.com/v1";
 pub const DEFAULT_TIMEOUT_MS: u64 = 90_000;
 pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 512;
@@ -406,6 +406,7 @@ mod tests {
         );
 
         assert!(settings.validate().is_ok());
+        assert_eq!(settings.model, "gpt-5.6-luna");
         assert_eq!(settings.reasoning_effort.as_deref(), Some("low"));
 
         settings.max_output_tokens = 0;
