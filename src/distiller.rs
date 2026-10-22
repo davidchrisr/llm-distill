@@ -14,6 +14,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+const INPUT_QUEUE_CAPACITY: usize = 8;
+
 pub async fn run(cli: Cli) -> Result<()> {
     let config_path = match cli.config.as_ref() {
         Some(path) => path.clone(),
@@ -205,38 +207,12 @@ async fn read_stdin_with_progress(
     settings: &RuntimeSettings,
     question: &str,
 ) -> Result<ReadResult> {
-    let (sender, receiver) = mpsc::channel();
+    let receiver = spawn_input_reader(io::stdin());
     let progress_interval = Duration::from_millis(settings.progress_interval_ms);
     let mut summary_worker = match settings.progress_mode {
         ProgressMode::Stats => SummaryWorker::disabled(),
         ProgressMode::Summary => SummaryWorker::start(settings, question)?,
     };
-
-    std::thread::spawn(move || {
-        let mut stdin = io::stdin();
-        let mut buffer = [0_u8; 8192];
-
-        loop {
-            match stdin.read(&mut buffer) {
-                Ok(0) => {
-                    let _ = sender.send((Instant::now(), Ok(Vec::new())));
-                    return;
-                }
-                Ok(size) => {
-                    if sender
-                        .send((Instant::now(), Ok(buffer[..size].to_vec())))
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
-                Err(error) => {
-                    let _ = sender.send((Instant::now(), Err(error)));
-                    return;
-                }
-            }
-        }
-    });
 
     let mut collector = OutputCollector::new(settings.max_collected_bytes);
     let mut interval_collector = OutputCollector::new(settings.max_collected_bytes);
@@ -310,6 +286,36 @@ async fn read_stdin_with_progress(
         input: collector.materialize(),
         previous_response_id,
     })
+}
+
+fn spawn_input_reader<R: Read + Send + 'static>(
+    mut input: R,
+) -> mpsc::Receiver<(Instant, io::Result<Vec<u8>>)> {
+    let (sender, receiver) = mpsc::sync_channel(INPUT_QUEUE_CAPACITY);
+    thread::spawn(move || {
+        let mut buffer = [0_u8; 8192];
+        loop {
+            match input.read(&mut buffer) {
+                Ok(0) => {
+                    let _ = sender.send((Instant::now(), Ok(Vec::new())));
+                    return;
+                }
+                Ok(size) => {
+                    if sender
+                        .send((Instant::now(), Ok(buffer[..size].to_vec())))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Err(error) => {
+                    let _ = sender.send((Instant::now(), Err(error)));
+                    return;
+                }
+            }
+        }
+    });
+    receiver
 }
 
 fn push_prompt_tail(prompt_tail: &mut String, chunk: &[u8]) {
@@ -577,6 +583,30 @@ fn snapshot_status_line(snapshot: &ProgressSnapshot, state: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_reader_stops_reading_when_queue_is_full() {
+        struct ObservedReader(mpsc::Sender<()>);
+        impl Read for ObservedReader {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                self.0.send(()).unwrap();
+                buffer.fill(b'x');
+                Ok(buffer.len())
+            }
+        }
+        let (read_sender, read_receiver) = mpsc::channel();
+        let receiver = spawn_input_reader(ObservedReader(read_sender));
+        for _ in 0..=INPUT_QUEUE_CAPACITY {
+            read_receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        assert!(matches!(
+            read_receiver.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert_eq!(receiver.recv().unwrap().1.unwrap().len(), 8192);
+        read_receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+        drop(receiver);
+    }
 
     #[test]
     fn next_progress_deadline_preserves_interval_schedule() {
