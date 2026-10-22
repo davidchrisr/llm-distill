@@ -180,6 +180,9 @@ pub async fn run(cli: Cli) -> Result<()> {
             &prompt,
             settings.max_output_tokens,
             previous_response_id,
+            cli.resumable
+                || has_previous_context
+                || settings.progress_mode == ProgressMode::Summary,
         )
         .await?;
 
@@ -544,6 +547,7 @@ fn run_summary_worker(
                     &prompt,
                     settings.progress_max_output_tokens,
                     previous_response_id.as_deref(),
+                    true,
                 )
                 .await?;
             previous_response_id = output.id.clone();

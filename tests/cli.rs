@@ -122,6 +122,41 @@ fn run_cli(base: &str, args: &[&str], input: &[u8]) -> Output {
 }
 
 #[test]
+fn storage_requires_a_chaining_mode_and_default_model_is_luna() {
+    for (args, stored, previous) in [
+        (vec![], false, false),
+        (vec!["--resumable"], true, false),
+        (vec!["--prev-response-id", "resp_previous"], true, true),
+        (
+            vec!["--from-context", "--prev-response-id", "resp_previous"],
+            true,
+            true,
+        ),
+        (vec!["--progress-mode", "summary"], true, false),
+    ] {
+        let api = MockApi::start(None);
+        let input = if args.contains(&"--from-context") {
+            b"".as_slice()
+        } else {
+            b"test log\n".as_slice()
+        };
+        let output = run_cli(&api.base, &args, input);
+        let requests = api.finish();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"answer\n");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["store"], stored);
+        assert_eq!(requests[0]["model"], "gpt-6-luna");
+        assert_eq!(requests[0]["reasoning"]["effort"], "low");
+        assert_eq!(requests[0].get("previous_response_id").is_some(), previous);
+    }
+}
+
+#[test]
 fn output_between_half_and_full_retention_limit_reaches_the_api() {
     let api = MockApi::start(None);
     let output = run_cli(

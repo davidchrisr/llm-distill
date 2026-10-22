@@ -29,7 +29,7 @@ impl ResponsesClient {
         prompt: &Prompt,
     ) -> Result<String> {
         Ok(self
-            .create_response(settings, prompt, settings.max_output_tokens, None)
+            .create_response(settings, prompt, settings.max_output_tokens, None, false)
             .await?
             .text)
     }
@@ -40,13 +40,20 @@ impl ResponsesClient {
         prompt: &Prompt,
         max_output_tokens: u32,
         previous_response_id: Option<&str>,
+        store: bool,
     ) -> Result<ResponseOutput> {
         let mut attempt = 0;
         let mut backoff = Duration::from_millis(settings.retry_backoff_ms);
 
         loop {
             match self
-                .try_create_response(settings, prompt, max_output_tokens, previous_response_id)
+                .try_create_response(
+                    settings,
+                    prompt,
+                    max_output_tokens,
+                    previous_response_id,
+                    store,
+                )
                 .await
             {
                 Ok(output) => return Ok(output),
@@ -72,6 +79,7 @@ impl ResponsesClient {
         prompt: &Prompt,
         max_output_tokens: u32,
         previous_response_id: Option<&str>,
+        store: bool,
     ) -> ResponseAttempt {
         let url = responses_url(&settings.api_base)?;
         let request = ResponsesRequest {
@@ -84,6 +92,7 @@ impl ResponsesClient {
             input: &prompt.input,
             max_output_tokens,
             previous_response_id,
+            store,
         };
 
         let response = self
@@ -188,6 +197,7 @@ struct ResponsesRequest<'a> {
     max_output_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     previous_response_id: Option<&'a str>,
+    store: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -202,6 +212,7 @@ fn responses_request_json(
     prompt: &Prompt,
     max_output_tokens: u32,
     previous_response_id: Option<&str>,
+    store: bool,
 ) -> Result<Value> {
     let request = ResponsesRequest {
         model,
@@ -210,6 +221,7 @@ fn responses_request_json(
         input: &prompt.input,
         max_output_tokens,
         previous_response_id,
+        store,
     };
 
     serde_json::to_value(request).context("failed to serialize Responses request")
@@ -312,10 +324,12 @@ mod tests {
             input: "input".to_string(),
         };
         let value =
-            responses_request_json("model", None, &prompt, 128, Some("resp_previous")).unwrap();
+            responses_request_json("model", None, &prompt, 128, Some("resp_previous"), true)
+                .unwrap();
 
         assert_eq!(value["previous_response_id"], "resp_previous");
         assert_eq!(value["max_output_tokens"], 128);
+        assert_eq!(value["store"], true);
     }
 
     #[test]
@@ -324,10 +338,11 @@ mod tests {
             instructions: "instructions".to_string(),
             input: "input".to_string(),
         };
-        let value = responses_request_json("model", None, &prompt, 128, None).unwrap();
+        let value = responses_request_json("model", None, &prompt, 128, None, false).unwrap();
 
         assert!(value.get("previous_response_id").is_none());
         assert!(value.get("reasoning").is_none());
+        assert_eq!(value["store"], false);
     }
 
     #[test]
@@ -337,7 +352,8 @@ mod tests {
             input: "input".to_string(),
         };
         let value =
-            responses_request_json("model", Some("future-effort"), &prompt, 128, None).unwrap();
+            responses_request_json("model", Some("future-effort"), &prompt, 128, None, false)
+                .unwrap();
 
         assert_eq!(value["reasoning"]["effort"], "future-effort");
     }

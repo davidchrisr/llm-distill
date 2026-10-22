@@ -49,7 +49,7 @@ pub struct Cli {
     #[arg(long)]
     pub max_collected_bytes: Option<usize>,
 
-    /// Periodic progress behavior while reading upstream output.
+    /// Periodic progress behavior. Summary mode enables server-side response storage.
     #[arg(long, value_enum)]
     pub progress_mode: Option<ProgressMode>,
 
@@ -69,11 +69,11 @@ pub struct Cli {
     #[arg(long)]
     pub retry_backoff_ms: Option<u64>,
 
-    /// Print the final response ID to stderr for later follow-up questions.
+    /// Enable server-side response storage and print the final response ID to stderr.
     #[arg(short = 'r', long)]
     pub resumable: bool,
 
-    /// Continue from a previous OpenAI Responses API response ID.
+    /// Continue from a previous response ID, enabling server-side response storage.
     #[arg(short = 'p', long)]
     pub prev_response_id: Option<String>,
 
