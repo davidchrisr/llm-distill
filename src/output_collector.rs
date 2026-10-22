@@ -64,7 +64,10 @@ impl OutputCollector {
 
     pub fn materialize(&self) -> String {
         if self.omitted_bytes == 0 {
-            return String::from_utf8_lossy(&self.head).into_owned();
+            let mut bytes = Vec::with_capacity(self.head.len() + self.tail.len());
+            bytes.extend_from_slice(&self.head);
+            bytes.extend(self.tail.iter().copied());
+            return String::from_utf8_lossy(&bytes).into_owned();
         }
 
         let head = String::from_utf8_lossy(&self.head);
@@ -98,6 +101,29 @@ mod tests {
         assert_eq!(collector.materialize(), "abc\n");
         assert_eq!(collector.total_bytes(), 4);
         assert_eq!(collector.total_lines(), 1);
+    }
+
+    #[test]
+    fn preserves_output_across_head_tail_and_retention_boundaries() {
+        for limit in [1, 2, 3, 19, 20] {
+            for length in 0..=limit {
+                let input = "x".repeat(length);
+                for chunk_size in 1..=limit {
+                    let mut collector = OutputCollector::new(limit);
+                    for chunk in input.as_bytes().chunks(chunk_size) {
+                        collector.push(chunk);
+                    }
+                    assert_eq!(collector.materialize(), input);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn preserves_utf8_split_between_head_and_tail() {
+        let mut collector = OutputCollector::new(4);
+        collector.push("a€".as_bytes());
+        assert_eq!(collector.materialize(), "a€");
     }
 
     #[test]
