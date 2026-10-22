@@ -1,8 +1,24 @@
 # llm-distill
 
-Rust CLI tool for compressing command output into the answer another agent needs.
+Rust CLI tool for compressing command output into the answer another agent
+needs.
 
-llm-distill targets the OpenAI Responses API.
+llm-distill targets the OpenAI Responses API. The default model is `gpt-6-luna`
+with `low` reasoning effort.
+
+## Privacy and transport
+
+Piped command output and your question are sent to the configured API endpoint.
+Output is not redacted. Do not pipe credentials, personal data, or confidential
+logs unless that endpoint is approved to receive them.
+
+Ordinary requests explicitly set `store: false`. `--resumable`,
+`--prev-response-id`, and `progress-mode=summary` enable server-side response
+storage for chaining and follow-up questions. Provider logging and retention
+rules still apply. See
+[OpenAI data controls](https://developers.openai.com/api/docs/guides/your-data).
+
+API endpoints may use HTTP or HTTPS.
 
 ## Interface Shape
 
@@ -18,21 +34,24 @@ Those are resolved once into `RuntimeSettings` with this precedence:
 defaults < config file < environment < CLI flags
 ```
 
-The `api-base` setting is the base URL for API requests. The runtime appends the selected
-API resource path itself. For OpenAI, the default API base is `https://api.openai.com/v1`.
+The `api-base` setting is the base URL for API requests. The runtime appends the
+selected API resource path itself. For OpenAI, the default API base is
+`https://api.openai.com/v1`.
 
-Persisted config uses the platform config directory for `llm-distill`.
-Reasoning effort defaults to `low` and can be overridden by config, environment, or CLI.
-The effort value is passed through to the API without restricting it to a fixed list.
+Persisted config uses the platform config directory for `llm-distill`. Reasoning
+effort defaults to `low` and can be overridden by config, environment, or CLI.
+The effort value is passed through to the API without restricting it to a fixed
+list.
 
 ## Usage
 
 ```sh
 cmd | distill "Did it pass? Return PASS or FAIL with failing test names."
-cargo test | distill --model gpt-5.4-mini --api-base https://api.openai.com/v1 "Summarize failures."
+cargo test | distill --model gpt-6-luna --api-base https://api.openai.com/v1 "Summarize failures."
 ```
 
-Pipe stdout into `distill` by default. Merge stderr only when stderr is noisy enough that it should be summarized instead of shown directly:
+Pipe stdout into `distill` by default. Merge stderr only when stderr is noisy
+enough that it should be summarized instead of shown directly:
 
 ```sh
 cmd 2>&1 | distill "Did it pass? Return PASS or FAIL with failing test names."
@@ -43,7 +62,7 @@ Configuration uses explicit verbs:
 ```sh
 distill config show
 distill config get model
-distill config set model gpt-5.4-mini
+distill config set model gpt-6-luna
 distill config set reasoning-effort medium
 distill config set api-base https://api.openai.com/v1
 distill config set timeout-ms 90000
@@ -76,24 +95,39 @@ Environment variables:
 
 ## Progress And Limits
 
-`distill` reads stdin continuously, but prints the final answer to stdout only after upstream EOF. Progress messages go to stderr so stdout remains usable as the distilled result.
+`distill` reads stdin continuously, but prints the final answer to stdout only
+after upstream EOF. Progress messages go to stderr so stdout remains usable as
+the distilled result.
 
-- `progress-mode=stats` prints periodic byte and line counts without extra model calls.
-- `progress-mode=summary` can make one Responses API call per progress interval that has new output, writes interim summaries to stderr, chains them with `previous_response_id`, and prints the final answer to stdout.
-- `progress-max-output-tokens` controls interim summary length. `max-output-tokens` controls the final answer length.
-- `max-collected-bytes` bounds local command-output retention. Large output keeps head and tail with an omission marker.
-- `interactive-detect-ms` errors if output appears to be waiting at an interactive prompt for that long. Set it to `0` to disable the guard.
+- `progress-mode=stats` prints periodic byte and line counts without extra model
+  calls.
+- `progress-mode=summary` can make one Responses API call per progress interval
+  that has new output, writes interim summaries to stderr, chains them with
+  `previous_response_id`, and prints the final answer to stdout.
+- `progress-max-output-tokens` controls interim summary length.
+  `max-output-tokens` controls the final answer length.
+- `max-collected-bytes` bounds local command-output retention. Large output
+  keeps head and tail with an omission marker.
+- Input buffering is limited to eight 8 KiB chunks plus one chunk being read.
+  Summary progress keeps one queued snapshot, one in flight, and one pending
+  enqueue. Each retained output or snapshot is bounded by `max-collected-bytes`,
+  plus its omission marker. Slow API calls apply backpressure to upstream
+  commands.
+- `interactive-detect-ms` errors if output appears to be waiting at an
+  interactive prompt for that long. Set it to `0` to disable the guard.
 - `retry-count` and `retry-backoff-ms` apply to transient API failures only.
 
 ## Follow-Up Questions
 
-Use `--resumable` or `-r` to print the final Responses API response ID to stderr:
+Use `--resumable` or `-r` to print the final Responses API response ID to
+stderr:
 
 ```sh
 long-command | distill -r "Return PASS/FAIL and root-cause errors."
 ```
 
-Use `--prev-response-id` or `-p` to continue from that response. Add `--from-context` or `-c` when asking a follow-up without new stdin:
+Use `--prev-response-id` or `-p` to continue from that response. Add
+`--from-context` or `-c` when asking a follow-up without new stdin:
 
 ```sh
 distill -c -p resp_123 -r "Which warning is actionable?"
@@ -144,7 +178,8 @@ scripts/sandboxed-build.sh
 The script generates sandbox profiles under `.local/`, then runs:
 
 - `cargo fetch --locked` in a network-enabled sandbox.
-- `cargo build --release --locked --offline` in a separate sandbox without network access.
+- `cargo build --release --locked --offline` in a separate sandbox without
+  network access.
 
 Both phases use project-local state:
 
@@ -153,7 +188,10 @@ Both phases use project-local state:
 - `CARGO_TARGET_DIR=.local/target` for the build phase
 - `TMPDIR=.local/tmp`
 
-The profiles import Apple's `bsd.sb` base profile, allow the project and resolved Rust toolchain paths, and allow the Xcode app contents, Darwin temp directory, system SSL config directory, and Xcode license plist needed by Apple's linker tooling. Host home is not used as `HOME` inside the sandbox.
+The profiles import Apple's `bsd.sb` base profile, allow the project and
+resolved Rust toolchain paths, and allow the Xcode app contents, Darwin temp
+directory, system SSL config directory, and Xcode license plist needed by
+Apple's linker tooling. Host home is not used as `HOME` inside the sandbox.
 
 Install the binary to a user-writable bin directory:
 
@@ -172,3 +210,7 @@ distill config show
 ## Agent Usage
 
 For agent sessions, install and use `skills/llm-distill` skill.
+
+## License
+
+[MIT](LICENSE).
