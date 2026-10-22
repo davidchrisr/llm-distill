@@ -15,6 +15,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const INPUT_QUEUE_CAPACITY: usize = 8;
+const SUMMARY_QUEUE_CAPACITY: usize = 1;
 
 pub async fn run(cli: Cli) -> Result<()> {
     let config_path = match cli.config.as_ref() {
@@ -226,29 +227,47 @@ async fn read_stdin_with_progress(
     loop {
         summary_worker.drain_completed();
 
-        let now = Instant::now();
-        fail_if_interactive_prompt_expired_at(&prompt_tail, suspected_prompt_at, settings, now)?;
+        // Drain buffered input before checking idle timers after API backpressure.
+        let message = match receiver.try_recv() {
+            Ok(message) => message,
+            Err(mpsc::TryRecvError::Disconnected) => break,
+            Err(mpsc::TryRecvError::Empty) => {
+                let now = Instant::now();
+                fail_if_interactive_prompt_expired_at(
+                    &prompt_tail,
+                    suspected_prompt_at,
+                    settings,
+                    now,
+                )?;
 
-        if now >= next_report_at {
-            report_progress(
-                settings,
-                &collector,
-                &mut interval_collector,
-                &mut snapshot_count,
-                last_output,
-                now,
-                &mut summary_worker,
-            )?;
-            next_report_at = next_progress_deadline(next_report_at, progress_interval, now);
-            continue;
-        }
+                if now >= next_report_at {
+                    report_progress(
+                        settings,
+                        &collector,
+                        &mut interval_collector,
+                        &mut snapshot_count,
+                        last_output,
+                        now,
+                        &mut summary_worker,
+                    )?;
+                    next_report_at =
+                        next_progress_deadline(next_report_at, progress_interval, Instant::now());
+                    continue;
+                }
 
-        let wait_until = next_interesting_deadline(next_report_at, suspected_prompt_at, settings);
-        let wait_duration = wait_until.saturating_duration_since(now);
+                let wait_until =
+                    next_interesting_deadline(next_report_at, suspected_prompt_at, settings);
+                match receiver.recv_timeout(wait_until.saturating_duration_since(now)) {
+                    Ok(message) => message,
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+        };
 
-        match receiver.recv_timeout(wait_duration) {
-            Ok((_, Ok(chunk))) if chunk.is_empty() => break,
-            Ok((received_at, Ok(chunk))) => {
+        match message {
+            (_, Ok(chunk)) if chunk.is_empty() => break,
+            (received_at, Ok(chunk)) => {
                 while received_at >= next_report_at {
                     report_progress(
                         settings,
@@ -267,16 +286,12 @@ async fn read_stdin_with_progress(
                 interval_collector.push(&chunk);
                 push_prompt_tail(&mut prompt_tail, &chunk);
                 if has_prompt_like_tail(&prompt_tail) {
-                    suspected_prompt_at = Some(received_at);
+                    suspected_prompt_at = Some(Instant::now());
                 } else {
                     suspected_prompt_at = None;
                 }
             }
-            Ok((_, Err(error))) => return Err(error).context("failed to read stdin"),
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                continue;
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            (_, Err(error)) => return Err(error).context("failed to read stdin"),
         }
     }
 
@@ -434,7 +449,7 @@ struct ProgressSnapshot {
 }
 
 struct SummaryWorker {
-    sender: Option<mpsc::Sender<ProgressSnapshot>>,
+    sender: Option<mpsc::SyncSender<ProgressSnapshot>>,
     completed_receiver: mpsc::Receiver<()>,
     handle: Option<thread::JoinHandle<Result<Option<String>>>>,
     active_count: usize,
@@ -453,7 +468,7 @@ impl SummaryWorker {
 
     #[cfg(test)]
     fn for_tests() -> (Self, mpsc::Receiver<ProgressSnapshot>, mpsc::Sender<()>) {
-        let (sender, receiver) = mpsc::channel::<ProgressSnapshot>();
+        let (sender, receiver) = mpsc::sync_channel::<ProgressSnapshot>(SUMMARY_QUEUE_CAPACITY);
         let (completed_sender, completed_receiver) = mpsc::channel::<()>();
         (
             Self {
@@ -468,7 +483,7 @@ impl SummaryWorker {
     }
 
     fn start(settings: &RuntimeSettings, question: &str) -> Result<Self> {
-        let (sender, receiver) = mpsc::channel::<ProgressSnapshot>();
+        let (sender, receiver) = mpsc::sync_channel::<ProgressSnapshot>(SUMMARY_QUEUE_CAPACITY);
         let (completed_sender, completed_receiver) = mpsc::channel::<()>();
         let settings = settings.clone();
         let question = question.to_string();
@@ -606,6 +621,32 @@ mod tests {
         assert_eq!(receiver.recv().unwrap().1.unwrap().len(), 8192);
         read_receiver.recv_timeout(Duration::from_secs(2)).unwrap();
         drop(receiver);
+    }
+
+    #[test]
+    fn summary_queue_applies_backpressure_without_dropping_snapshots() {
+        let (mut worker, receiver, _completed_sender) = SummaryWorker::for_tests();
+        worker.enqueue(snapshot(1)).unwrap();
+        let (started_sender, started_receiver) = mpsc::channel();
+        let (finished_sender, finished_receiver) = mpsc::channel();
+        let producer = thread::spawn(move || {
+            started_sender.send(()).unwrap();
+            worker.enqueue(snapshot(2)).unwrap();
+            finished_sender.send(()).unwrap();
+        });
+        started_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        assert!(matches!(
+            finished_receiver.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert_eq!(receiver.recv().unwrap().number, 1);
+        finished_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(receiver.recv().unwrap().number, 2);
+        producer.join().unwrap();
     }
 
     #[test]

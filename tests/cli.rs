@@ -173,3 +173,52 @@ fn output_between_half_and_full_retention_limit_reaches_the_api() {
             .contains("0123456789FAIL")
     );
 }
+
+#[test]
+fn slow_summaries_preserve_chaining_and_final_output_under_backpressure() {
+    let api = MockApi::with_delay(None, Duration::from_millis(60));
+    let mut child = spawn_cli(
+        &api.base,
+        &[
+            "--progress-mode",
+            "summary",
+            "--progress-interval-ms",
+            "5",
+            "--interactive-detect-ms",
+            "50",
+            "--max-input-chars",
+            "1000",
+        ],
+    );
+    let mut stdin = child.stdin.take().unwrap();
+    let mut chunk = vec![b'x'; 8192];
+    let prompt = b"password:";
+    chunk[8192 - prompt.len()..].copy_from_slice(prompt);
+    for _ in 0..12 {
+        stdin.write_all(&chunk).unwrap();
+        thread::sleep(Duration::from_millis(10));
+    }
+    stdin.write_all(b"\nFINAL_SENTINEL\n").unwrap();
+    drop(stdin);
+    let output = child.wait_with_output().unwrap();
+    let requests = api.finish();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(requests.len() >= 3);
+    assert_eq!(requests[0].get("previous_response_id"), None);
+    for request in &requests {
+        assert_eq!(request["store"], true);
+    }
+    for request in requests.iter().skip(1) {
+        assert_eq!(request["previous_response_id"], "resp_test");
+    }
+    assert!(
+        requests.last().unwrap()["input"]
+            .as_str()
+            .unwrap()
+            .contains("FINAL_SENTINEL")
+    );
+}
