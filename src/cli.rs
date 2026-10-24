@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(name = "distill")]
-#[command(about = "Compress command output into the answer an agent needs")]
+#[command(about = "Reduce coding agent context costs with a cheaper model for tool output")]
 #[command(
     override_usage = "distill [OPTIONS] <QUESTION>...\n       distill [OPTIONS] config [COMMAND]"
 )]
@@ -13,7 +13,7 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
 
-    /// OpenAI Responses API model.
+    /// Distillation model used to summarize tool output.
     #[arg(long)]
     pub model: Option<String>,
 

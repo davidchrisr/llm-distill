@@ -1,47 +1,15 @@
 # llm-distill
 
-Rust CLI tool for compressing command output into the answer another agent
-needs.
+A Rust CLI that reduces context costs for expensive AI models by using
+smaller, cheaper models to summarize verbose tool output. Build logs, test
+results, and diagnostics become concise answers, so the main agent spends fewer
+tokens processing raw output.
 
-llm-distill targets the OpenAI Responses API. The default model is `gpt-6-luna`
-with `low` reasoning effort.
+Pipe tool output and a focused question into `distill`. The distillation model
+reads the output, and the main coding model receives the concise answer.
 
-## Privacy and transport
-
-Piped command output and your question are sent to the configured API endpoint.
-Output is not redacted. Do not pipe credentials, personal data, or confidential
-logs unless that endpoint is approved to receive them.
-
-Ordinary requests explicitly set `store: false`. `--resumable`,
-`--prev-response-id`, and `progress-mode=summary` enable server-side response
-storage for chaining and follow-up questions. Provider logging and retention
-rules still apply. See
-[OpenAI data controls](https://developers.openai.com/api/docs/guides/your-data).
-
-API endpoints may use HTTP or HTTPS.
-
-## Interface Shape
-
-The settings model is intentionally split into three layers:
-
-- `PersistedSettings`: values stored in the user config file.
-- `EnvSettings`: values read from `DISTILL_*` environment variables.
-- `CliOverrides`: values supplied on the current invocation.
-
-Those are resolved once into `RuntimeSettings` with this precedence:
-
-```text
-defaults < config file < environment < CLI flags
-```
-
-The `api-base` setting is the base URL for API requests. The runtime appends the
-selected API resource path itself. For OpenAI, the default API base is
-`https://api.openai.com/v1`.
-
-Persisted config uses the platform config directory for `llm-distill`. Reasoning
-effort defaults to `low` and can be overridden by config, environment, or CLI.
-The effort value is passed through to the API without restricting it to a fixed
-list.
+llm-distill targets the OpenAI Responses API. `--model` selects the distillation
+model, which defaults to `gpt-6-luna` with `low` reasoning effort.
 
 ## Usage
 
@@ -93,7 +61,7 @@ Environment variables:
 - `DISTILL_RETRY_COUNT`
 - `DISTILL_RETRY_BACKOFF_MS`
 
-## Progress And Limits
+## Progress and limits
 
 `distill` reads stdin continuously, but prints the final answer to stdout only
 after upstream EOF. Progress messages go to stderr so stdout remains usable as
@@ -117,7 +85,7 @@ the distilled result.
   interactive prompt for that long. Set it to `0` to disable the guard.
 - `retry-count` and `retry-backoff-ms` apply to transient API failures only.
 
-## Follow-Up Questions
+## Follow-up questions
 
 Use `--resumable` or `-r` to print the final Responses API response ID to
 stderr:
@@ -139,7 +107,44 @@ If new command output is available, pipe it and pass the previous response ID:
 next-command | distill -p resp_123 -r "Compare this output with the previous run."
 ```
 
-## Local Development
+## Interface shape
+
+The settings model is intentionally split into three layers:
+
+- `PersistedSettings`: values stored in the user config file.
+- `EnvSettings`: values read from `DISTILL_*` environment variables.
+- `CliOverrides`: values supplied on the current invocation.
+
+Those are resolved once into `RuntimeSettings` with this precedence:
+
+```text
+defaults < config file < environment < CLI flags
+```
+
+The `api-base` setting is the base URL for API requests. The runtime appends the
+selected API resource path itself. For OpenAI, the default API base is
+`https://api.openai.com/v1`.
+
+Persisted config uses the platform config directory for `llm-distill`. Reasoning
+effort defaults to `low` and can be overridden by config, environment, or CLI.
+The effort value is passed through to the API without restricting it to a fixed
+list.
+
+## Privacy and transport
+
+Piped command output and your question are sent to the configured API endpoint.
+Output is not redacted. Do not pipe credentials, personal data, or confidential
+logs unless that endpoint is approved to receive them.
+
+Ordinary requests explicitly set `store: false`. `--resumable`,
+`--prev-response-id`, and `progress-mode=summary` enable server-side response
+storage for chaining and follow-up questions. Provider logging and retention
+rules still apply. See
+[OpenAI data controls](https://developers.openai.com/api/docs/guides/your-data).
+
+API endpoints may use HTTP or HTTPS.
+
+## Local development
 
 Set up mount targets before starting the container:
 
@@ -167,7 +172,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-## Sandboxed Build
+## Sandboxed build
 
 Build a macOS binary with dependency and build writes confined to this project:
 
@@ -207,7 +212,7 @@ distill --help
 distill config show
 ```
 
-## Agent Usage
+## Agent usage
 
 For agent sessions, install and use `skills/llm-distill` skill.
 

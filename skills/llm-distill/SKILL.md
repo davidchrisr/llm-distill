@@ -8,22 +8,23 @@ description:
 
 # LLM Distill
 
-Use `distill` to compress long, non-interactive command output into the specific
-answer the agent needs.
+Use `distill` to reduce the context cost of verbose tool output. It sends raw,
+non-interactive command output and a focused question to a smaller, cheaper
+model, then returns a concise answer for the main coding agent to read.
 
 Command output and the question are sent to the configured API endpoint without
 secret redaction. Check that logs contain no credentials, personal data, or
 confidential content unless the endpoint is approved to receive it.
 
-The default model is `gpt-6-luna`. Ordinary requests disable response storage.
-`--resumable`, `--prev-response-id`, and `--progress-mode summary` enable
-server-side response storage for follow-ups and chaining. Provider logging and
-retention rules still apply. See
+`--model` selects the distillation model, which defaults to `gpt-6-luna`.
+Ordinary requests disable response storage. `--resumable`, `--prev-response-id`,
+and `--progress-mode summary` enable server-side response storage for follow-ups
+and chaining. Provider logging and retention rules still apply. See
 [OpenAI data controls](https://developers.openai.com/api/docs/guides/your-data).
 
 API endpoints may use HTTP or HTTPS.
 
-## When To Use
+## When to use
 
 - Use for commands that may emit long logs: builds, tests, linters, package
   installs, service logs, large searches, migrations, framework CLIs, and
@@ -34,7 +35,7 @@ API endpoints may use HTTP or HTTPS.
   interactive, output is already small, or the user asked to see the literal
   output.
 
-## Prompt Shape
+## Prompt shape
 
 Give `distill` an explicit task and requested output shape.
 
@@ -51,7 +52,7 @@ Prefer constrained answers such as `PASS/FAIL`, failing test names, root-cause
 errors, changed files, warnings that matter, and next action. Avoid broad
 prompts like "summarize this".
 
-## Command Form
+## Command form
 
 Pipe stdout into `distill` by default. Host command stderr bypasses the pipe and
 remains visible directly in tool output, which is usually preferable when stderr
@@ -93,7 +94,7 @@ docker exec my-container sh -c "cd /workspace && rg -n 'InvoiceService|createInv
     "I am investigating how invoices are created and totals are calculated. Summarize only matches relevant to that goal. Return likely relevant files, key symbols/functions, repeated patterns, and 5-8 next files or symbols to inspect. Do not list every match."
 ```
 
-## Runtime Behavior
+## Runtime behavior
 
 - `distill` waits for upstream EOF before printing the final answer.
 - If upstream output is empty or whitespace only, `distill` may exit
@@ -110,7 +111,7 @@ docker exec my-container sh -c "cd /workspace && rg -n 'InvoiceService|createInv
   narrow approval required for `distill` instead of broadening the upstream
   command.
 
-## Useful Options
+## Useful options
 
 - `--max-output-tokens N`: cap final answer length.
 - `--max-collected-bytes N`: bound retained command output for very large logs.
@@ -137,7 +138,7 @@ long-command 2>&1 | distill \
   "Track the run. Return PASS/FAIL, root-cause errors, and any warnings requiring action."
 ```
 
-## Follow-Up Questions
+## Follow-up questions
 
 Use `--resumable` when command output may need later follow-up questions:
 
@@ -167,7 +168,7 @@ next-command | distill -p resp_... -r "Compare this output with the previous run
 Prefer continuing from the latest final response ID for a linear thread. Reusing
 an older response ID is useful for branching from that point.
 
-## Reporting Back
+## Reporting back
 
 When answering the user, relay the distilled result and mention if raw output
 was not inspected. If `distill` failed and exact output is not needed, rerun
